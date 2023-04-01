@@ -1,2 +1,2 @@
 thejamesGPT
-learnin' discord bot
+learnin' my way around a discord bot
