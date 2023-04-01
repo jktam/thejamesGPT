@@ -1,0 +1,2 @@
+thejamesGPT
+learnin' discord bot
