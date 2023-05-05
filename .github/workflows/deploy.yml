@@ -3,23 +3,23 @@ jobs:
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v3
-      - name: Deploy thejamesgpt Discord bot
-        run: cp 
+      - name: List files of thejamesgpt Discord bot
+        run: ls
 
 
 
-name: Deploy Bot
-on:
-  push:
-    branches: ["main"]
+# name: Deploy Bot
+# on:
+#   push:
+#     branches: ["main"]
 
-jobs:
-  my_job:
-    name: Deploy
-    runs-on: self-hosted
-    steps:
-    - uses: actions/checkout@v3
-    - name: List files
-      run: ls
-    #- name: Copy folder
-      #run: sudo cp -r ${{secrets.COPY_FROM_FOLDER}} ${{secrets.COPY_TO_FOLDER}}
+# jobs:
+#   my_job:
+#     name: Deploy
+#     runs-on: self-hosted
+#     steps:
+#     - uses: actions/checkout@v3
+#     - name: List files
+#       run: ls
+#     #- name: Copy folder
+#       #run: sudo cp -r ${{secrets.COPY_FROM_FOLDER}} ${{secrets.COPY_TO_FOLDER}}
