@@ -1,0 +1,25 @@
+jobs:
+  build:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v3
+      - name: Deploy thejamesgpt Discord bot
+        run: cp 
+
+
+
+name: Deploy Bot
+on:
+  push:
+    branches: ["main"]
+
+jobs:
+  my_job:
+    name: Deploy Job
+    runs-on: self-hosted
+    steps:
+    - uses: actions/checkout@v3
+    - name: List files
+      run: ls
+    - name: Copy folder to where nginx expects it to be
+      #run: sudo cp -r ${{secrets.COPY_FROM_FOLDER}} ${{secrets.COPY_TO_FOLDER}}

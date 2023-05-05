@@ -25,20 +25,21 @@ async def query_chatgpt(prompt):
     )
     return response.choices[0].text
 
+async def get_file(message):
+    # Check if the message has an attached image
+    if len(message.attachments) == 0:
+        await message.channel.send("Please attach an image to edit.")
+        return
+
+    # Get the attached image file
+    attached_file = message.attachments[0]
+
+    # Download the attached image file
+    response = requests.get(attached_file.url)
+    file = BytesIO(response.content)
+    return file
+
 def resize_image(file):
-    image = Image.open(file)
-    width, height = 1024, 1024
-    image = image.resize((width,height))
-    image = image.convert('RGBA')
-
-    # Convert the image to a BytesIO object
-    byte_stream = BytesIO()
-    image.save(byte_stream, format='PNG')
-    byte_array = byte_stream.getvalue()
-
-    return byte_array
-
-def resize_image_square(file):
     desired_size = 1028
 
     im = Image.open(file)
@@ -73,7 +74,7 @@ async def query_dalle(prompt):
     return response['data'][0]['url']
 
 async def query_dalle_edit(prompt,file):
-    byte_array = resize_image_square(file)
+    byte_array = resize_image(file)
     try:
         response = openai.Image.create_edit(
             image=byte_array,
@@ -91,7 +92,7 @@ async def query_dalle_edit(prompt,file):
     return response['data'][0]['url']
 
 async def query_dalle_variation(file):
-    byte_array = resize_image_square(file)
+    byte_array = resize_image(file)
     try:
         response = openai.Image.create_variation(
         image=byte_array,
@@ -131,43 +132,14 @@ async def on_message(message):
         await message.channel.send(image_url)
 
     if message.content.startswith('!jedit'):
-        # Check if the message has an attached image
-        if len(message.attachments) == 0:
-            await message.channel.send("Please attach an image to edit.")
-            return
-
         prompt = message.content.replace('!jedit', '').strip()
-
-        # Get the attached image file
-        attached_file = message.attachments[0]
-
-        # Download the attached image file
-        response = requests.get(attached_file.url)
-        file = BytesIO(response.content)
-
-        # Edit the image
+        file = await get_file(message)
         edited_image = await query_dalle_edit(prompt,file)
-
-        # Send the edited image back to the user
         await message.channel.send(edited_image)
     
     if message.content.startswith('!jvari'):
-        # Check if the message has an attached image
-        if len(message.attachments) == 0:
-            await message.channel.send("Please attach an image to edit.")
-            return
-
-        # Get the attached image file
-        attached_file = message.attachments[0]
-
-        # Download the attached image file
-        response = requests.get(attached_file.url)
-        file = BytesIO(response.content)
-
-        # Edit the image
+        file = await get_file(message)
         edited_image = await query_dalle_variation(file)
-
-        # Send the edited image back to the user
         await message.channel.send(edited_image)
 
 client.run(DISCORD_TOKEN)
