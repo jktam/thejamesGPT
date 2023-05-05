@@ -11,7 +11,7 @@ jobs:
       - name: List files of thejamesgpt Discord bot
         run: ls
       - name: Copy bot.py
-        run: cp -r ${{secrets.COPY_FROM_FOLDER}} ${{secrets.COPY_TO_FOLDER}}
+        run: cp -r ${{secrets.COPY_FROM_FOLDER}}/bot.py ${{secrets.COPY_TO_FOLDER}}
       # - name: Restart python bot.py
 
 # name: Deploy Bot
