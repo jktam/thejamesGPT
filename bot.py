@@ -1,6 +1,7 @@
 import discord
 import os
 import openai
+import json
 from dotenv import load_dotenv
 from PIL import Image, ImageOps
 import requests
@@ -9,6 +10,8 @@ from io import BytesIO
 load_dotenv()
 CHATGPT_TOKEN = os.getenv('CHATGPT_API_KEY')
 DISCORD_TOKEN = os.getenv('DISCORD_BOT_API_KEY')
+GCP_TOKEN = os.getenv('GCP_API_KEY')
+GCP_PROJECT_ID = os.getenv('GCP_PROJECT')
 openai.api_key = CHATGPT_TOKEN
 
 intents = discord.Intents.all()
@@ -107,9 +110,43 @@ async def query_dalle_variation(file):
     
     return response['data'][0]['url']
 
+# def query_bard(prompt):
+#     response = requests.post("https://bard.googleapis.com/v1/generate", headers=
+#                    {"Authorization": "Bearer " + GCP_TOKEN},
+#                              json={"query": prompt})
+#     data = json.loads(response.content)
+#     return data["text"]
+
+#Using Vertex AI because I don't have Bard API yet :(
+def query_bard(prompt):
+    session = requests.Session()
+    session.headers["Authorization"] = f"Bearer {GCP_TOKEN}"
+    response = session.post(
+        "https://us-central1-aiplatform.googleapis.com/v1/projects/"+GCP_PROJECT_ID+"/locations/us-central1/publishers/google/models/text-bison:predict",
+        #headers={"Authorization": "Bearer " + GCP_TOKEN},
+        json={
+            "instances": [
+                {
+                    "prompt": prompt
+                }
+            ]
+        }
+    )
+
+    # Check for errors
+    if response.status_code != 200:
+        raise Exception(f"Vertex AI API error: {response.status_code}")
+
+    # return response.choices[0].text
+    return response.json()["predictions"][0].text
+
 async def format_embed(response):
     embed = discord.Embed(title="The James Roll says...", description=response, color=0x00ff00)
     return embed
+
+
+
+############### BOT COMMANDS ###############
 
 @client.event
 async def on_message(message):
@@ -117,7 +154,9 @@ async def on_message(message):
         return
 
     if message.content.startswith('!jhelp'):
-        text = "_command info_\n**!jpt <prompt>** : classic chatgpt text completion\n**!jmg <prompt> +ATTACHED_IMAGE** : given png image with transparency, ai will fill the transparent space with info from the prompt\n**!jvari +ATTACHED_IMAGE** : given image, generate random variation"
+        #text = "_command info_\n**!jpt <prompt>** : classic chatgpt text completion\n**!jmg <prompt> +ATTACHED_IMAGE** : given png image with transparency, ai will fill the transparent space with info from the prompt\n**!jvari +ATTACHED_IMAGE** : given image, generate random variation"
+        with open("readme.md", "r") as f:
+            text = f.read()
         await message.channel.send(text)
 
     if message.content.startswith('!jpt'):
@@ -141,5 +180,11 @@ async def on_message(message):
         file = await get_file(message)
         edited_image = await query_dalle_variation(file)
         await message.channel.send(edited_image)
+
+    if message.content.startswith('!jabard'):
+        prompt = message.content.replace('!jabard', '').strip()
+        response = await query_bard(prompt)
+        embed = await format_embed(response)
+        await message.channel.send(embed=embed)
 
 client.run(DISCORD_TOKEN)
