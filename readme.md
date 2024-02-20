@@ -9,4 +9,4 @@
 **!jvari +ATTACHED_IMAGE** : given image, generate random variation
 ### Gemini actions
 **!jem <prompt>** : gemini text response
-**!jemi <prompt>** : generate image given prompt
+**!jemi <prompt>** : (coming soon) generate image given prompt

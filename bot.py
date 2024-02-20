@@ -118,7 +118,6 @@ def query_gemini(prompt):
     # response_data = json.loads(response.content)
     if response.status_code != 200:
         return f"Vertex AI API error: {response.status_code}"
-    # print(response.json()['candidates'][0]['content']['parts'][0].get('text'))
     return response.json()['candidates'][0]['content']['parts'][0].get('text')
 
 async def format_embed(response):
