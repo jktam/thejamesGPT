@@ -203,7 +203,7 @@ async def on_message(message):
     if message.content.startswith('!jem'):
         prompt = message.content.replace('!jem', '').strip()
         response = query_gemini(prompt)
-        print(response.json())
+        # print(response.json())
         text_response = response.json()['candidates'][0]['content']['parts'][0].get('text')
         embed = await format_embed(text_response)
         await message.channel.send(embed=embed)
