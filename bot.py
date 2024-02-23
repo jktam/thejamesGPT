@@ -1,17 +1,14 @@
 import discord
 import os
 import openai
-import json
 from dotenv import load_dotenv
-from PIL import Image, ImageOps
+from PIL import Image
 import requests
 from io import BytesIO
 
 load_dotenv()
 CHATGPT_TOKEN = os.getenv('CHATGPT_API_KEY')
 DISCORD_TOKEN = os.getenv('DISCORD_BOT_API_KEY')
-#GCP_TOKEN = os.getenv('GCP_API_KEY')
-GCP_PROJECT_ID = os.getenv('GCP_PROJECT')
 GEMINI_TOKEN = os.getenv('GOOGLE_AI_API_KEY')
 openai.api_key = CHATGPT_TOKEN
 
@@ -112,13 +109,56 @@ async def query_dalle_variation(file):
     return response['data'][0]['url']
 
 def query_gemini(prompt):
-    response = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GEMINI_TOKEN}", headers=
-                   {"Content-Type": "application/json"},
-                        json={"contents":[{"parts":[{"text":prompt}]}]})
-    # response_data = json.loads(response.content)
-    if response.status_code != 200:
-        return f"Vertex AI API error: {response.status_code}"
-    return response.json()['candidates'][0]['content']['parts'][0].get('text')
+    try:
+        response = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GEMINI_TOKEN}",
+            headers={"Content-Type": "application/json"},
+            json={
+                "contents":[
+                    {
+                        "parts":[
+                            {"text": prompt}
+                        ]
+                    }
+                ],
+                "safetySettings": [
+                    {
+                        "category": "HARM_CATEGORY_HARASSMENT",
+                        "threshold": "BLOCK_NONE"
+                    },
+                    {
+                        "category": "HARM_CATEGORY_HATE_SPEECH",
+                        "threshold": "BLOCK_NONE"
+                    },
+                    {
+                        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                        "threshold": "BLOCK_NONE"
+                    },
+                    {
+                        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                        "threshold": "BLOCK_NONE"
+                    },
+                ],
+                "generationConfig": {
+                    "stopSequences": [
+                        "Title"
+                    ],
+                    "temperature": 0.9,
+                    "maxOutputTokens": 800#,
+                    # "topP": 1,
+                    # "topK": 1
+                }
+            }
+        )
+        response.raise_for_status()  # Raise exception for non-2xx status codes
+        return response
+    except requests.exceptions.RequestException as e:
+        if isinstance(e, requests.exceptions.ConnectionError):
+            error_message = f"Failed to connect to the API. Please check your internet connection\nStatus code: {response.status_code}"
+        elif isinstance(e, requests.exceptions.Timeout):
+            error_message = f"Request timed out. Please try again later.\nStatus code: {response.status_code}"
+        else:
+            error_message = f"An unexpected error occurred: {e}\nsafetyRatings: {response.json()['candidates'][0]['safetyRatings']}"
+        return error_message
 
 async def format_embed(response):
     embed = discord.Embed(title="The James Roll says...", description=response, color=0x00ff00)
@@ -163,7 +203,14 @@ async def on_message(message):
     if message.content.startswith('!jem'):
         prompt = message.content.replace('!jem', '').strip()
         response = query_gemini(prompt)
-        embed = await format_embed(response)
+        print(response.json())
+        text_response = response.json()['candidates'][0]['content']['parts'][0].get('text')
+        embed = await format_embed(text_response)
         await message.channel.send(embed=embed)
+        ### DEBUG INFO ###
+        ## token_count = response.json()['candidates'][0]['tokenCount'] #doesn't exist?
+        finish_reason = response.json()['candidates'][0]['finishReason']
+        safety_ratings = response.json()['candidates'][0]['safetyRatings']
+        await message.channel.send(f"**Debug info**\nFinish Reason:```{finish_reason}```Safety Ratings:```{safety_ratings}```")
 
 client.run(DISCORD_TOKEN)
