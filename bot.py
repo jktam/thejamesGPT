@@ -5,6 +5,10 @@ from dotenv import load_dotenv
 from PIL import Image
 import requests
 from io import BytesIO
+import random
+from discord.ext import commands
+import asyncio
+from blackjack import *
 
 load_dotenv()
 CHATGPT_TOKEN = os.getenv('CHATGPT_API_KEY')
@@ -13,7 +17,7 @@ GEMINI_TOKEN = os.getenv('GOOGLE_AI_API_KEY')
 openai.api_key = CHATGPT_TOKEN
 
 intents = discord.Intents.all()
-client = discord.Client(intents=intents)
+bot = commands.Bot(command_prefix='!', intents=intents)
 
 async def query_chatgpt(prompt):
     response = openai.Completion.create(
@@ -165,52 +169,122 @@ async def format_embed(response):
     return embed
 
 
-
 ############### BOT COMMANDS ###############
 
-@client.event
+@bot.event
+async def on_ready():
+    print(f'Logged in as {bot.user.name}')
+
+@bot.command(name="jhelp")
 async def on_message(message):
-    if message.author == client.user:
+    with open("readme.md", "r") as f:
+        text = f.read()
+    await message.channel.send(text)
+
+@bot.command(name="jhoose")
+async def on_message(ctx, *, choices: str):
+    # Split the input string into a list of choices
+    choices_list = [choice.strip() for choice in choices.split(',')]
+    
+    if len(choices_list) < 2:
+        await ctx.send("Please provide at least two choices separated by commas.")
         return
 
-    if message.content.startswith('!jhelp'):
-        with open("readme.md", "r") as f:
-            text = f.read()
-        await message.channel.send(text)
+    result = random.choice(choices_list)
+    await ctx.send(content=f"The result is: {result}")
 
-    if message.content.startswith('!jpt'):
-        prompt = message.content.replace('!jpt', '').strip()
-        response = await query_chatgpt(prompt)
-        embed = await format_embed(response)
-        await message.channel.send(embed=embed)
+@bot.command(name="jpt")
+async def on_message(ctx, *, message: str):
+    prompt = message
+    response = await query_chatgpt(prompt)
+    embed = await format_embed(response)
+    await ctx.send(embed=embed)
 
-    if message.content.startswith('!jpti'):
-        prompt = message.content.replace('!jpti', '').strip()
-        image_url = await query_dalle(prompt)
-        await message.channel.send(image_url)
+@bot.command(name="jpti")
+async def on_message(ctx, *, message: str):
+    prompt = message
+    image_url = await query_dalle(prompt)
+    await ctx.send(image_url)
 
-    if message.content.startswith('!jedit'):
-        prompt = message.content.replace('!jedit', '').strip()
-        file = await get_file(message)
-        edited_image = await query_dalle_edit(prompt,file)
-        await message.channel.send(edited_image)
+@bot.command(name="jedit")
+async def on_message(ctx, *, message: str):
+    prompt = message
+    file = await get_file(message)
+    edited_image = await query_dalle_edit(prompt,file)
+    await ctx.send(edited_image)
     
-    if message.content.startswith('!jvari'):
-        file = await get_file(message)
-        edited_image = await query_dalle_variation(file)
-        await message.channel.send(edited_image)
+@bot.command(name="jvari")
+async def on_message(ctx, *, message: str):
+    file = await get_file(message)
+    edited_image = await query_dalle_variation(file)
+    await ctx.send(edited_image)
 
-    if message.content.startswith('!jem'):
-        prompt = message.content.replace('!jem', '').strip()
-        response = query_gemini(prompt)
-        # print(response.json())
-        text_response = response.json()['candidates'][0]['content']['parts'][0].get('text')
-        embed = await format_embed(text_response)
-        await message.channel.send(embed=embed)
-        ### DEBUG INFO ###
-        ## token_count = response.json()['candidates'][0]['tokenCount'] #doesn't exist?
-        finish_reason = response.json()['candidates'][0]['finishReason']
-        safety_ratings = response.json()['candidates'][0]['safetyRatings']
-        await message.channel.send(f"**Debug info**\nFinish Reason:```{finish_reason}```Safety Ratings:```{safety_ratings}```")
+@bot.command(name="jem")
+async def on_message(ctx, *, message: str):
+    prompt = message
+    print(prompt)
+    response = query_gemini(prompt)
+    # print(response.json())
+    text_response = response.json()['candidates'][0]['content']['parts'][0].get('text')
+    embed = await format_embed(text_response)
+    await ctx.send(embed=embed)
+    ### DEBUG INFO ###
+    ## token_count = response.json()['candidates'][0]['tokenCount'] #doesn't exist?
+    # finish_reason = response.json()['candidates'][0]['finishReason']
+    # safety_ratings = response.json()['candidates'][0]['safetyRatings']
+    # await message.channel.send(f"**Debug info**\nFinish Reason:```{finish_reason}```Safety Ratings:```{safety_ratings}```")
 
-client.run(DISCORD_TOKEN)
+@bot.command(name='21')
+async def blackjack(ctx):
+    player_hand = [deal_card(deck), deal_card(deck)]
+    dealer_hand = [deal_card(deck), deal_card(deck)]
+    
+    player_value = calculate_hand(player_hand)
+    dealer_value = calculate_hand(dealer_hand)
+    
+    await ctx.send(f"Your hand: {player_hand} (value: {player_value})")
+    await ctx.send(f"Dealer's showing card: {dealer_hand[0]}")
+    
+    while player_value < 21:
+        await ctx.send('Do you want to hit or stand? (h/s)')
+        
+        def check(m):
+            return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() in ['h', 's']
+        
+        try:
+            response = await bot.wait_for('message', check=check, timeout=30.0)
+        except asyncio.TimeoutError:
+            await ctx.send('Game timed out.')
+            return
+        
+        if response.content.lower() == 'h':
+            player_hand.append(deal_card(deck))
+            player_value = calculate_hand(player_hand)
+            await ctx.send(f"Your hand: {player_hand} (value: {player_value})")
+        elif response.content.lower() == 's':
+            break
+    
+    if player_value > 21:
+        await ctx.send('You busted! Dealer wins.')
+        return
+
+    await ctx.send(f"Dealer's hand: {dealer_hand} (value: {dealer_value})")
+    
+    while dealer_value < 17:
+        dealer_hand.append(deal_card(deck))
+        dealer_value = calculate_hand(dealer_hand)
+        await ctx.send(f"Dealer's hand: {dealer_hand} (value: {dealer_value})")
+    
+    if dealer_value > 21 or player_value > dealer_value:
+        await ctx.send('You win!')
+    elif player_value < dealer_value:
+        await ctx.send('Dealer wins!')
+    else:
+        await ctx.send('It\'s a tie!')
+
+@bot.command(name="jtest")
+async def on_message(message):
+    await message.channel.send("testestest")
+
+
+bot.run(DISCORD_TOKEN)

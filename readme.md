@@ -2,6 +2,8 @@
 
 ## Commands
 **!jhelp**: command list
+**!jhoose**: randomly choose a single option from a comma separated input
+**!21**: blackjack - beta
 ### OpenAI actions
 **!jpt <prompt>** : classic chatgpt text response
 **!jpti**: generate image given prompt
