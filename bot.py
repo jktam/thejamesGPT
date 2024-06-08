@@ -164,10 +164,72 @@ def query_gemini(prompt):
             error_message = f"An unexpected error occurred: {e}\nsafetyRatings: {response.json()['candidates'][0]['safetyRatings']}"
         return error_message
 
+def miles_to_meters(miles):
+    return miles * 1609.34
+
+def geocode_city(city):
+    geocode_url = f'https://maps.googleapis.com/maps/api/geocode/json?address={city}&key={GEMINI_TOKEN}'
+    response = requests.get(geocode_url).json()
+    if response['status'] == 'OK':
+        location = response['results'][0]['geometry']['location']
+        return location['lat'], location['lng']
+    else:
+        return None, None
+
+def get_restaurants(city, radius_miles=35, category=None):
+    # Convert miles to meters
+    radius_meters = miles_to_meters(radius_miles)
+    
+    # Geocode the city to get latitude and longitude
+    lat, lng = geocode_city(city)
+    if lat is None or lng is None:
+        return None, "Geocoding error: City not found or API error."
+    
+    # Places API to find restaurants in the given radius and category
+    places_url = (f'https://maps.googleapis.com/maps/api/place/nearbysearch/json'
+                  f'?location={lat},{lng}&radius={radius_meters}&type=restaurant'
+                  f'&key={GEMINI_TOKEN}')
+    
+    if category:
+        places_url += f'&keyword={category}'
+
+    places_response = requests.get(places_url).json()
+    
+    if places_response['status'] != 'OK':
+        return None, f"Error: {places_response['status']}"
+    
+    restaurants = places_response['results']
+    restaurant_list = [f"{restaurant['name']} - {restaurant['vicinity']}" for restaurant in restaurants]
+    
+    return restaurant_list, None
+
+
+def get_restaurant_address(restaurant_name, city):
+    # Geocode the city to get latitude and longitude
+    lat, lng = geocode_city(city)
+    if lat is None or lng is None:
+        return None, "Geocoding error: City not found or API error."
+    
+    # Places API to search for the restaurant by name near the city location
+    places_url = (f'https://maps.googleapis.com/maps/api/place/textsearch/json'
+                  f'?query={restaurant_name} restaurant in {city}&location={lat},{lng}&key={GEMINI_TOKEN}')
+    
+    places_response = requests.get(places_url).json()
+    
+    if places_response['status'] != 'OK':
+        return None, f"Error: {places_response['status']}"
+    
+    if not places_response['results']:
+        return None, "Restaurant not found."
+    
+    restaurant = places_response['results'][0]
+    address = restaurant['formatted_address']
+    
+    return address, None
+
 async def format_embed(response):
     embed = discord.Embed(title="The James Roll says...", description=response, color=0x00ff00)
     return embed
-
 
 ############### BOT COMMANDS ###############
 
@@ -222,7 +284,7 @@ async def on_message(ctx, *, message: str):
 @bot.command(name="jem")
 async def on_message(ctx, *, message: str):
     prompt = message
-    print(prompt)
+    # print(prompt)
     response = query_gemini(prompt)
     # print(response.json())
     text_response = response.json()['candidates'][0]['content']['parts'][0].get('text')
@@ -281,6 +343,23 @@ async def blackjack(ctx):
         await ctx.send('Dealer wins!')
     else:
         await ctx.send('It\'s a tie!')
+
+@bot.command(name='eats')
+async def fetch_restaurants(ctx, city: str, radius: float, *, category: str = None):
+    restaurants, error = get_restaurants(city, radius, category)
+    if error:
+        await ctx.send(error)
+    else:
+        response = "\n".join(restaurants)
+        await ctx.send(response if response else "No restaurants found.")
+
+@bot.command(name='addy')
+async def fetch_address(ctx, restaurant_name: str, city: str):
+    address, error = get_restaurant_address(restaurant_name, city)
+    if error:
+        await ctx.send(error)
+    else:
+        await ctx.send(f"Address of {restaurant_name} in {city}: {address}")
 
 @bot.command(name="jtest")
 async def on_message(message):

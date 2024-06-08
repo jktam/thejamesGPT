@@ -4,6 +4,8 @@
 **!jhelp**: command list
 **!jhoose**: randomly choose a single option from a comma separated input
 **!21**: blackjack - beta
+**!eats <city> <miles> [optional: category]**: get list of restaurants within given radius in miles (default 35 miles); optional food category accepted (e.g. Chinese)
+**!addy <restaurant_name> <city>**: get address of restaurant
 ### OpenAI actions
 **!jpt <prompt>** : classic chatgpt text response
 **!jpti**: generate image given prompt
