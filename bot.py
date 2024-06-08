@@ -193,6 +193,8 @@ def get_restaurants(city, radius_miles=35, category=None):
     if category:
         places_url += f'&keyword={category}'
 
+    places_url += '&rankby=prominence&limit=10'
+
     places_response = requests.get(places_url).json()
     
     if places_response['status'] != 'OK':
