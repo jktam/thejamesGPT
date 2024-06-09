@@ -200,9 +200,10 @@ def get_restaurants(city, radius_miles=35, category=None):
     if places_response['status'] != 'OK':
         return None, f"Error: {places_response['status']}"
     
-    restaurants = places_response['results']
-    restaurant_list = [f"{restaurant['name']} - {restaurant['vicinity']}" for restaurant in restaurants]
-    
+    restaurants = places_response['results'][:10]
+    # restaurant_list = [f"{restaurant['name']} - {restaurant['vicinity']}" for restaurant in restaurants]
+    restaurant_list = [f"**{i + 1}. {restaurant['name']}**{restaurant['vicinity']}" for i, restaurant in enumerate(restaurants)]
+
     return restaurant_list, None
 
 
@@ -225,9 +226,10 @@ def get_restaurant_address(restaurant_name, city):
         return None, "Restaurant not found."
     
     restaurant = places_response['results'][0]
+    name = restaurant['name']
     address = restaurant['formatted_address']
     
-    return address, None
+    return name, address, None
 
 async def format_embed(response):
     embed = discord.Embed(title="The James Roll says...", description=response, color=0x00ff00)
@@ -238,6 +240,8 @@ async def format_embed(response):
 @bot.event
 async def on_ready():
     print(f'Logged in as {bot.user.name}')
+    activity = discord.Activity(type=discord.ActivityType.watching, name="you poop")
+    await bot.change_presence(status=discord.Status.dnd, activity=activity)
 
 @bot.command(name="jhelp")
 async def on_message(message):
@@ -259,39 +263,59 @@ async def on_message(ctx, *, choices: str):
 
 @bot.command(name="jpt")
 async def on_message(ctx, *, message: str):
-    prompt = message
-    response = await query_chatgpt(prompt)
-    embed = await format_embed(response)
-    await ctx.send(embed=embed)
+    waiting_message = await message.channel.send("...")
+    try:
+        prompt = message
+        response = await query_chatgpt(prompt)
+        embed = await format_embed(response)
+        await ctx.send(embed=embed)
+    finally:
+        await waiting_message.delete()
 
 @bot.command(name="jpti")
 async def on_message(ctx, *, message: str):
-    prompt = message
-    image_url = await query_dalle(prompt)
-    await ctx.send(image_url)
+    waiting_message = await message.channel.send("...")
+    try:
+        prompt = message
+        image_url = await query_dalle(prompt)
+        await ctx.send(image_url)
+    finally:
+        await waiting_message.delete()
 
 @bot.command(name="jedit")
 async def on_message(ctx, *, message: str):
-    prompt = message
-    file = await get_file(message)
-    edited_image = await query_dalle_edit(prompt,file)
-    await ctx.send(edited_image)
-    
+    waiting_message = await message.channel.send("...")
+    try:
+        prompt = message
+        file = await get_file(message)
+        edited_image = await query_dalle_edit(prompt,file)
+        await ctx.send(edited_image)
+    finally:
+        await waiting_message.delete()
+
 @bot.command(name="jvari")
 async def on_message(ctx, *, message: str):
-    file = await get_file(message)
-    edited_image = await query_dalle_variation(file)
-    await ctx.send(edited_image)
+    waiting_message = await message.channel.send("...")
+    try:
+        file = await get_file(message)
+        edited_image = await query_dalle_variation(file)
+        await ctx.send(edited_image)
+    finally:
+        await waiting_message.delete()
 
 @bot.command(name="jem")
 async def on_message(ctx, *, message: str):
-    prompt = message
-    # print(prompt)
-    response = query_gemini(prompt)
-    # print(response.json())
-    text_response = response.json()['candidates'][0]['content']['parts'][0].get('text')
-    embed = await format_embed(text_response)
-    await ctx.send(embed=embed)
+    waiting_message = await message.channel.send("...")
+    try:
+        prompt = message
+        # print(prompt)
+        response = query_gemini(prompt)
+        # print(response.json())
+        text_response = response.json()['candidates'][0]['content']['parts'][0].get('text')
+        embed = await format_embed(text_response)
+        await ctx.send(embed=embed)
+    finally:
+        await waiting_message.delete()
     ### DEBUG INFO ###
     ## token_count = response.json()['candidates'][0]['tokenCount'] #doesn't exist?
     # finish_reason = response.json()['candidates'][0]['finishReason']
@@ -352,16 +376,17 @@ async def fetch_restaurants(ctx, city: str, radius: float, *, category: str = No
     if error:
         await ctx.send(error)
     else:
-        response = "\n".join(restaurants)
+        response = "\n\n".join(restaurants)
+        # embed = await format_embed(response)
         await ctx.send(response if response else "No restaurants found.")
 
 @bot.command(name='addy')
 async def fetch_address(ctx, restaurant_name: str, city: str):
-    address, error = get_restaurant_address(restaurant_name, city)
+    name, address, error = get_restaurant_address(restaurant_name, city)
     if error:
         await ctx.send(error)
     else:
-        await ctx.send(f"Address of {restaurant_name} in {city}: {address}")
+        await ctx.send(f"Address of {name}: {address}")
 
 @bot.command(name="jtest")
 async def on_message(message):
