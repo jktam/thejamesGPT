@@ -371,7 +371,7 @@ async def blackjack(ctx):
         await ctx.send('It\'s a tie!')
 
 @bot.command(name='eats')
-async def fetch_restaurants(ctx, city: str, radius: float, *, category: str = None):
+async def fetch_restaurants(ctx, city: str, radius: float = 3, *, category: str = None):
     restaurants, error = get_restaurants(city, radius, category)
     if error:
         await ctx.send(error)
