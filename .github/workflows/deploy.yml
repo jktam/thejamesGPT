@@ -7,10 +7,10 @@ jobs:
   build:
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: List files of thejamesgpt Discord bot
         run: ls
       - name: Copy bot.py and supporting files
-        run: cp -r ${{secrets.COPY_FROM_FOLDER}}/{bot.py,readme.md}  ${{secrets.COPY_TO_FOLDER}}
+        run: cp -r ${{secrets.COPY_FROM_FOLDER}}/{bot.py,readme.md,blackjack.py}  ${{secrets.COPY_TO_FOLDER}}
       - name: Restart python bot.py systemd service
         run: sudo systemctl restart bot-thejamesgpt.service

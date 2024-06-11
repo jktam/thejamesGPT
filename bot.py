@@ -263,7 +263,7 @@ async def on_message(ctx, *, choices: str):
 
 @bot.command(name="jpt")
 async def on_message(ctx, *, message: str):
-    waiting_message = await message.channel.send("...")
+    waiting_message = await ctx.send("...")
     try:
         prompt = message
         response = await query_chatgpt(prompt)
@@ -274,7 +274,7 @@ async def on_message(ctx, *, message: str):
 
 @bot.command(name="jpti")
 async def on_message(ctx, *, message: str):
-    waiting_message = await message.channel.send("...")
+    waiting_message = await ctx.send("...")
     try:
         prompt = message
         image_url = await query_dalle(prompt)
@@ -284,7 +284,7 @@ async def on_message(ctx, *, message: str):
 
 @bot.command(name="jedit")
 async def on_message(ctx, *, message: str):
-    waiting_message = await message.channel.send("...")
+    waiting_message = await ctx.send("...")
     try:
         prompt = message
         file = await get_file(message)
@@ -295,7 +295,7 @@ async def on_message(ctx, *, message: str):
 
 @bot.command(name="jvari")
 async def on_message(ctx, *, message: str):
-    waiting_message = await message.channel.send("...")
+    waiting_message = await ctx.send("...")
     try:
         file = await get_file(message)
         edited_image = await query_dalle_variation(file)
@@ -305,7 +305,7 @@ async def on_message(ctx, *, message: str):
 
 @bot.command(name="jem")
 async def on_message(ctx, *, message: str):
-    waiting_message = await message.channel.send("...")
+    waiting_message = await ctx.send("...")
     try:
         prompt = message
         # print(prompt)
@@ -390,7 +390,7 @@ async def fetch_address(ctx, restaurant_name: str, city: str):
 
 @bot.command(name="jtest")
 async def on_message(message):
-    await message.channel.send("testestest")
+    await message.channel.send("Test command")
 
 
 bot.run(DISCORD_TOKEN)
