@@ -272,7 +272,7 @@ async def on_message(ctx, *, message: str):
     finally:
         await waiting_message.delete()
 
-@bot.command(name="jpti")
+@bot.command(name="jimg")
 async def on_message(ctx, *, message: str):
     waiting_message = await ctx.send("...")
     try:
@@ -322,8 +322,8 @@ async def on_message(ctx, *, message: str):
     # safety_ratings = response.json()['candidates'][0]['safetyRatings']
     # await message.channel.send(f"**Debug info**\nFinish Reason:```{finish_reason}```Safety Ratings:```{safety_ratings}```")
 
-@bot.command(name='21')
-async def blackjack(ctx):
+#@bot.command(name='21')
+#async def blackjack(ctx):
     player_hand = [deal_card(deck), deal_card(deck)]
     dealer_hand = [deal_card(deck), deal_card(deck)]
     
@@ -369,6 +369,91 @@ async def blackjack(ctx):
         await ctx.send('Dealer wins!')
     else:
         await ctx.send('It\'s a tie!')
+@bot.command(name='21test')
+async def blackjack(ctx, bet: int = None):
+    user_id = str(ctx.author.id)
+    if user_id not in money_pool:
+        money_pool[user_id] = 1000  # Initial balance
+    balance = money_pool[user_id]
+
+    if bet is None:
+        await ctx.send(f'{ctx.author.mention}, you need to place a bet to play. Usage: `!21 <bet>`')
+        return
+    
+    if bet > balance:
+        await ctx.send(f'{ctx.author.mention}, you are too broke to place that bet.')
+        return
+
+    money_pool[user_id] -= bet
+
+    deck = deck_template.copy()
+    player_hand = [deal_card(deck), deal_card(deck)]
+    dealer_hand = [deal_card(deck), deal_card(deck)]
+
+    player_value = calculate_hand(player_hand)
+    dealer_value = calculate_hand(dealer_hand)
+
+    await ctx.send(f"Your hand: {player_hand} (value: {player_value})")
+    await ctx.send(f"Dealer's showing card: {dealer_hand[0]}")
+
+    while player_value < 21:
+        await ctx.send('Do you want to hit or stand? (h/s)')
+
+        def check(m):
+            return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() in ['h', 's']
+
+        try:
+            response = await bot.wait_for('message', check=check, timeout=30.0)
+        except asyncio.TimeoutError:
+            await ctx.send('Game timed out.')
+            money_pool[user_id] += bet  # Refund bet
+            save_money_pool()
+            return
+
+        if response.content.lower() == 'h':
+            player_hand.append(deal_card(deck))
+            player_value = calculate_hand(player_hand)
+            await ctx.send(f"Your hand: {player_hand} (value: {player_value})")
+        elif response.content.lower() == 's':
+            break
+
+    if player_value > 21:
+        await ctx.send(f'{ctx.author.mention}, you busted! Dealer wins. You lost ${bet}.')
+        save_money_pool()
+        return
+
+    await ctx.send(f"Dealer's hand: {dealer_hand} (value: {dealer_value})")
+
+    while dealer_value < 17:
+        dealer_hand.append(deal_card(deck))
+        dealer_value = calculate_hand(dealer_hand)
+        await ctx.send(f"Dealer's hand: {dealer_hand} (value: {dealer_value})")
+
+    if dealer_value > 21 or player_value > dealer_value:
+        winnings = 2 * bet
+        money_pool[user_id] += winnings
+        await ctx.send(f'{ctx.author.mention}, you win! You won ${winnings}.')
+    elif player_value < dealer_value:
+        await ctx.send(f'{ctx.author.mention}, dealer wins! You lost ${bet}.')
+    else:
+        money_pool[user_id] += bet  # Return bet on tie
+        await ctx.send(f'{ctx.author.mention}, it\'s a tie! Your bet of ${bet} has been returned.')
+
+    save_money_pool()
+
+@bot.command(name='bal')
+async def balance(ctx):
+    user_id = str(ctx.author.id)
+    balance = money_pool.get(user_id, 1000)  # Default balance is 1000
+    await ctx.send(f'{ctx.author.mention}, your balance is ${balance}')
+
+@bot.command(name='resetbal')
+async def reset_balance(ctx):
+    user_id = str(ctx.author.id)
+    money_pool[user_id] = 1000  # Reset balance to default
+    save_money_pool()
+    await ctx.send(f'{ctx.author.mention}, your balance has been reset to $1000.')
+
 
 @bot.command(name='eats')
 async def fetch_restaurants(ctx, city: str, radius: float = 3, *, category: str = None):
