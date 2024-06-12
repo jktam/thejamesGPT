@@ -369,7 +369,7 @@ async def on_message(ctx, *, message: str):
         await ctx.send('Dealer wins!')
     else:
         await ctx.send('It\'s a tie!')
-@bot.command(name='21test')
+@bot.command(name='21')
 async def blackjack(ctx, bet: int = None):
     user_id = str(ctx.author.id)
     if user_id not in money_pool:
