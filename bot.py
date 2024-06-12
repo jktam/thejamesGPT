@@ -318,57 +318,59 @@ async def on_message(ctx, *, message: str):
         await waiting_message.delete()
     ### DEBUG INFO ###
     ## token_count = response.json()['candidates'][0]['tokenCount'] #doesn't exist?
-    # finish_reason = response.json()['candidates'][0]['finishReason']
-    # safety_ratings = response.json()['candidates'][0]['safetyRatings']
-    # await message.channel.send(f"**Debug info**\nFinish Reason:```{finish_reason}```Safety Ratings:```{safety_ratings}```")
+    finish_reason = response.json()['candidates'][0]['finishReason']
+    safety_ratings = response.json()['candidates'][0]['safetyRatings']
+    await ctx.send(f"**Debug info**\nFinish Reason:```{finish_reason}```Safety Ratings:```{safety_ratings}```")
 
 #@bot.command(name='21')
-#async def blackjack(ctx):
-    player_hand = [deal_card(deck), deal_card(deck)]
-    dealer_hand = [deal_card(deck), deal_card(deck)]
+# async def blackjack(ctx):
+#     player_hand = [deal_card(deck), deal_card(deck)]
+#     dealer_hand = [deal_card(deck), deal_card(deck)]
     
-    player_value = calculate_hand(player_hand)
-    dealer_value = calculate_hand(dealer_hand)
+#     player_value = calculate_hand(player_hand)
+#     dealer_value = calculate_hand(dealer_hand)
     
-    await ctx.send(f"Your hand: {player_hand} (value: {player_value})")
-    await ctx.send(f"Dealer's showing card: {dealer_hand[0]}")
+#     await ctx.send(f"Your hand: {player_hand} (value: {player_value})")
+#     await ctx.send(f"Dealer's showing card: {dealer_hand[0]}")
     
-    while player_value < 21:
-        await ctx.send('Do you want to hit or stand? (h/s)')
+#     while player_value < 21:
+#         await ctx.send('Do you want to hit or stand? (h/s)')
         
-        def check(m):
-            return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() in ['h', 's']
+#         def check(m):
+#             return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() in ['h', 's']
         
-        try:
-            response = await bot.wait_for('message', check=check, timeout=30.0)
-        except asyncio.TimeoutError:
-            await ctx.send('Game timed out.')
-            return
+#         try:
+#             response = await bot.wait_for('message', check=check, timeout=30.0)
+#         except asyncio.TimeoutError:
+#             await ctx.send('Game timed out.')
+#             return
         
-        if response.content.lower() == 'h':
-            player_hand.append(deal_card(deck))
-            player_value = calculate_hand(player_hand)
-            await ctx.send(f"Your hand: {player_hand} (value: {player_value})")
-        elif response.content.lower() == 's':
-            break
+#         if response.content.lower() == 'h':
+#             player_hand.append(deal_card(deck))
+#             player_value = calculate_hand(player_hand)
+#             await ctx.send(f"Your hand: {player_hand} (value: {player_value})")
+#         elif response.content.lower() == 's':
+#             break
     
-    if player_value > 21:
-        await ctx.send('You busted! Dealer wins.')
-        return
+#     if player_value > 21:
+#         await ctx.send('You busted! Dealer wins.')
+#         return
 
-    await ctx.send(f"Dealer's hand: {dealer_hand} (value: {dealer_value})")
+#     await ctx.send(f"Dealer's hand: {dealer_hand} (value: {dealer_value})")
     
-    while dealer_value < 17:
-        dealer_hand.append(deal_card(deck))
-        dealer_value = calculate_hand(dealer_hand)
-        await ctx.send(f"Dealer's hand: {dealer_hand} (value: {dealer_value})")
+#     while dealer_value < 17:
+#         dealer_hand.append(deal_card(deck))
+#         dealer_value = calculate_hand(dealer_hand)
+#         await ctx.send(f"Dealer's hand: {dealer_hand} (value: {dealer_value})")
     
-    if dealer_value > 21 or player_value > dealer_value:
-        await ctx.send('You win!')
-    elif player_value < dealer_value:
-        await ctx.send('Dealer wins!')
-    else:
-        await ctx.send('It\'s a tie!')
+#     if dealer_value > 21 or player_value > dealer_value:
+#         await ctx.send('You win!')
+#     elif player_value < dealer_value:
+#         await ctx.send('Dealer wins!')
+#     else:
+#         await ctx.send('It\'s a tie!')
+
+
 @bot.command(name='21')
 async def blackjack(ctx, bet: int = None):
     user_id = str(ctx.author.id)
@@ -377,7 +379,11 @@ async def blackjack(ctx, bet: int = None):
     balance = money_pool[user_id]
 
     if bet is None:
-        await ctx.send(f'{ctx.author.mention}, you need to place a bet to play. Usage: `!21 <bet>`')
+        await ctx.send(f'{ctx.author.mention}, you need to place a bet to play. The minimum to play is $20. Usage: `!21 <bet>`')
+        return
+    
+    if bet < 20:
+        await ctx.send(f'{ctx.author.mention}, your bet is too low. The minimum to play is $20.')
         return
     
     if bet > balance:
@@ -393,6 +399,7 @@ async def blackjack(ctx, bet: int = None):
     player_value = calculate_hand(player_hand)
     dealer_value = calculate_hand(dealer_hand)
 
+    await ctx.send(f"Bet amount: ${bet}")
     await ctx.send(f"Your hand: {player_hand} (value: {player_value})")
     await ctx.send(f"Dealer's showing card: {dealer_hand[0]}")
 
@@ -453,6 +460,54 @@ async def blackjack(ctx, bet: int = None):
         await ctx.send(f'{ctx.author.mention}, it\'s a tie! Your bet of ${bet} has been returned.')
 
     save_money_pool()
+
+@bot.command(name='21join')
+async def join(ctx, bet: int = None):
+    if ctx.guild.id not in games:
+        games[ctx.guild.id] = {
+            'players': [],
+            'deck': deck_template.copy(),
+            'dealer_hand': [],
+            'current_player': 0
+        }
+
+    game = games[ctx.guild.id]
+    user_id = str(ctx.author.id)
+
+    if user_id not in money_pool:
+        money_pool[user_id] = 1000  # Initial balance
+
+    if bet is None or bet > money_pool[user_id] or bet < 20:
+        await ctx.send(f'{ctx.author.mention}, you need to place a valid bet to join the game. The minimum to play is $20.')
+        return
+
+    if any(player['id'] == user_id for player in game['players']):
+        await ctx.send(f'{ctx.author.mention}, you have already joined the game.')
+        return
+
+    money_pool[user_id] -= bet
+
+    game['players'].append({
+        'id': user_id,
+        'hand': [deal_card(game['deck']), deal_card(game['deck'])],
+        'bet': bet,
+        'doubled_down': False
+    })
+
+    await ctx.send(f'{ctx.author.mention} has joined the game with a bet of ${bet}.')
+
+@bot.command(name='21start')
+async def start(ctx):
+    if ctx.guild.id not in games or len(games[ctx.guild.id]['players']) == 0:
+        await ctx.send('No players have joined the game yet.')
+        return
+
+    game = games[ctx.guild.id]
+    game['dealer_hand'] = [deal_card(game['deck']), deal_card(game['deck'])]
+    game['current_player'] = 0
+
+    await ctx.send(f"Dealer's showing card: {game['dealer_hand'][0]}")
+    await play_turn(ctx, bot)
 
 @bot.command(name='bal')
 async def balance(ctx):
