@@ -396,11 +396,13 @@ async def blackjack(ctx, bet: int = None):
     await ctx.send(f"Your hand: {player_hand} (value: {player_value})")
     await ctx.send(f"Dealer's showing card: {dealer_hand[0]}")
 
+    doubled_down = False
+
     while player_value < 21:
-        await ctx.send('Do you want to hit or stand? (h/s)')
+        await ctx.send('Do you want to hit, stand, or double down? (h/s/d)')
 
         def check(m):
-            return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() in ['h', 's']
+            return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() in ['h', 's', 'd']
 
         try:
             response = await bot.wait_for('message', check=check, timeout=30.0)
@@ -416,6 +418,17 @@ async def blackjack(ctx, bet: int = None):
             await ctx.send(f"Your hand: {player_hand} (value: {player_value})")
         elif response.content.lower() == 's':
             break
+        elif response.content.lower() == 'd':
+            if bet * 2 > balance:
+                await ctx.send(f'{ctx.author.mention}, you do not have enough balance to double down.')
+                continue
+            money_pool[user_id] -= bet
+            bet *= 2
+            player_hand.append(deal_card(deck))
+            player_value = calculate_hand(player_hand)
+            await ctx.send(f"Your hand after doubling down: {player_hand} (value: {player_value})")
+            doubled_down = True
+            break
 
     if player_value > 21:
         await ctx.send(f'{ctx.author.mention}, you busted! Dealer wins. You lost ${bet}.')
@@ -430,7 +443,7 @@ async def blackjack(ctx, bet: int = None):
         await ctx.send(f"Dealer's hand: {dealer_hand} (value: {dealer_value})")
 
     if dealer_value > 21 or player_value > dealer_value:
-        winnings = 2 * bet
+        winnings = 2 * bet if doubled_down else bet * 2
         money_pool[user_id] += winnings
         await ctx.send(f'{ctx.author.mention}, you win! You won ${winnings}.')
     elif player_value < dealer_value:
