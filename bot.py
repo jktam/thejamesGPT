@@ -352,7 +352,7 @@ async def blackjack(ctx, bet: int = None):
 
     await ctx.send(f"Bet amount: ${bet}")
     await ctx.send(f"Your hand: {display_hand(player_hand)} (value: {player_value})")
-    await ctx.send(f"Dealer's showing card: {display_hand(dealer_hand)}")
+    await ctx.send(f"Dealer's showing card: {display_hand(dealer_hand)[0]}")
 
     doubled_down = False
 
