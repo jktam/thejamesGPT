@@ -6,14 +6,17 @@ from PIL import Image
 import requests
 from io import BytesIO
 import random
+from discord import app_commands
 from discord.ext import commands
 import asyncio
 from blackjack import *
+from bs4 import BeautifulSoup
 
 load_dotenv()
 CHATGPT_TOKEN = os.getenv('CHATGPT_API_KEY')
 DISCORD_TOKEN = os.getenv('DISCORD_BOT_API_KEY')
 GEMINI_TOKEN = os.getenv('GOOGLE_AI_API_KEY')
+GUILD_ID = os.getenv('GUILD_ID')
 openai.api_key = CHATGPT_TOKEN
 
 intents = discord.Intents.all()
@@ -206,7 +209,6 @@ def get_restaurants(city, radius_miles=35, category=None):
 
     return restaurant_list, None
 
-
 def get_restaurant_address(restaurant_name, city):
     # Geocode the city to get latitude and longitude
     lat, lng = geocode_city(city)
@@ -231,23 +233,67 @@ def get_restaurant_address(restaurant_name, city):
     
     return name, address, None
 
+async def get_rednote_info(url):
+    try:
+        response = requests.get(url)
+        response.raise_for_status()  # Raise an exception for bad status codes
+        soup = BeautifulSoup(response.content, 'html.parser')
+        # Extract relevant information (adjust selectors as needed)
+        title_div = soup.find('div', id='detail-title', class_='title')
+        if title_div:
+            title = title_div.text.strip() 
+        else:
+            title = "Could not find title" 
+        thumbnail_tag = soup.find('meta', property='og:image')
+        if thumbnail_tag:
+            thumbnail_url = thumbnail_tag['content']
+        else:
+            thumbnail_url = None
+        return title, thumbnail_url
+    except Exception as e:
+        print(f"Error fetching RedNote info: {e}")
+        return None, None
+
 async def format_embed(response):
     embed = discord.Embed(title="The James Roll says...", description=response, color=0x00ff00)
     return embed
 
 ############### BOT COMMANDS ###############
 
+async def setup():
+    await bot.wait_until_ready()
+    bot.tree.copy_global_to(guild=discord.Object(id=GUILD_ID))
+    await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
+
 @bot.event
 async def on_ready():
     print(f'Logged in as {bot.user.name}')
     activity = discord.Activity(type=discord.ActivityType.watching, name="you poop")
     await bot.change_presence(status=discord.Status.dnd, activity=activity)
+    await setup()
 
-@bot.command(name="jhelp")
+@bot.event
 async def on_message(message):
+    if message.author == bot.user:
+        return
+
+    if '://rednote.com/' in message.content or '://xhslink.com/a/' in message.content:
+        url = message.content.split(' ')[0]  # Get the first URL in the message
+        title, thumbnail_url = await get_rednote_info(url)
+        if title and thumbnail_url:
+            embed = discord.Embed(
+                title=title,
+                url=url,
+                color=0x00ff00
+            )
+            embed.set_image(url=thumbnail_url)
+            await message.channel.send(embed=embed)
+
+@bot.tree.command(name="jhelp", description="Prints The James Roll README.md")
+async def help(Interaction: discord.interactions):
     with open("readme.md", "r") as f:
         text = f.read()
-    await message.channel.send(text)
+    await Interaction.response.send_message(text, ephemeral=True)
 
 @bot.command(name="jhoose")
 async def on_message(ctx, *, choices: str):
@@ -322,189 +368,6 @@ async def on_message(ctx, *, message: str):
     safety_ratings = response.json()['candidates'][0]['safetyRatings']
     await ctx.send(f"**Debug info**\nFinish Reason:```{finish_reason}```Safety Ratings:```{safety_ratings}```")
 
-@bot.command(name='21')
-async def blackjack(ctx, bet: int = None):
-    user_id = str(ctx.author.id)
-    if user_id not in money_pool:
-        money_pool[user_id] = 1000  # Initial balance
-    balance = money_pool[user_id]
-
-    if bet is None or not isinstance(bet,int):
-        await ctx.send(f'{ctx.author.mention}, you need to place a valid bet to play. The minimum to play is $20. Usage: `!21 <bet>`')
-        return
-    
-    if bet < 20:
-        await ctx.send(f'{ctx.author.mention}, your bet is too low. The minimum to play is $20.')
-        return
-    
-    if bet > balance:
-        await ctx.send(f'{ctx.author.mention}, you are too broke to place that bet.')
-        return
-
-    money_pool[user_id] -= bet
-
-    deck = deck_template.copy()
-    player_hand = [deal_card(deck), deal_card(deck)]
-    dealer_hand = [deal_card(deck), deal_card(deck)]
-
-    player_value = calculate_hand(player_hand)
-    dealer_value = calculate_hand(dealer_hand)
-
-    await ctx.send(f"Bet amount: ${bet}")
-    await ctx.send(f"Your hand: {display_hand(player_hand)} (value: {player_value})")
-    await ctx.send(f"Dealer's showing card: {display_hand(dealer_hand)[0]}")
-
-    doubled_down = False
-
-    while player_value < 21:
-        await ctx.send('Do you want to hit, stand, or double down? (h/s/d)')
-
-        def check(m):
-            return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() in ['h', 's', 'd']
-
-        try:
-            response = await bot.wait_for('message', check=check, timeout=30.0)
-        except asyncio.TimeoutError:
-            await ctx.send('Game timed out.')
-            money_pool[user_id] += bet  # Refund bet
-            save_money_pool()
-            return
-
-        if response.content.lower() == 'h':
-            player_hand.append(deal_card(deck))
-            player_value = calculate_hand(player_hand)
-            await ctx.send(f"Your hand: {display_hand(player_hand)} (value: {player_value})")
-        elif response.content.lower() == 's':
-            break
-        elif response.content.lower() == 'd':
-            if bet * 2 > balance:
-                await ctx.send(f'{ctx.author.mention}, you do not have enough balance to double down.')
-                continue
-            money_pool[user_id] -= bet
-            bet *= 2
-            player_hand.append(deal_card(deck))
-            player_value = calculate_hand(player_hand)
-            await ctx.send(f"Your hand after doubling down: {display_hand(player_hand)} (value: {player_value})")
-            doubled_down = True
-            break
-
-    if player_value > 21:
-        await ctx.send(f'{ctx.author.mention}, you busted! Dealer wins. You lost ${bet}.')
-        save_money_pool()
-        return
-
-    await ctx.send(f"Dealer's hand: {display_hand(dealer_hand)} (value: {dealer_value})")
-
-    while dealer_value < 17:
-        dealer_hand.append(deal_card(deck))
-        dealer_value = calculate_hand(dealer_hand)
-        await ctx.send(f"Dealer's hand: {display_hand(dealer_hand)} (value: {dealer_value})")
-
-    if dealer_value > 21 or player_value > dealer_value:
-        winnings = 2 * bet if doubled_down else bet * 2
-        money_pool[user_id] += winnings
-        await ctx.send(f'{ctx.author.mention}, you win! You won ${winnings}.')
-    elif player_value < dealer_value:
-        await ctx.send(f'{ctx.author.mention}, dealer wins! You lost ${bet}.')
-    else:
-        money_pool[user_id] += bet  # Return bet on tie
-        await ctx.send(f'{ctx.author.mention}, it\'s a tie! Your bet of ${bet} has been returned.')
-
-    save_money_pool()
-
-@bot.command(name='21join')
-async def join(ctx, bet: int = None):
-    if ctx.guild.id not in games:
-        games[ctx.guild.id] = {
-            'players': [],
-            'deck': deck_template.copy(),
-            'dealer_hand': [],
-            'current_player': 0
-        }
-
-    game = games[ctx.guild.id]
-    user_id = str(ctx.author.id)
-
-    if user_id not in money_pool:
-        money_pool[user_id] = 1000  # Initial balance
-
-    if bet is None or not isinstance(bet,int):
-        await ctx.send(f'{ctx.author.mention}, you need to place a valid bet to play. The minimum to play is $20. Usage: `!21 <bet>`')
-        return
-    
-    if bet < 20:
-        await ctx.send(f'{ctx.author.mention}, your bet is too low. The minimum to play is $20.')
-        return
-    
-    if bet > money_pool[user_id]:
-        await ctx.send(f'{ctx.author.mention}, you are too broke to place that bet.')
-        return
-
-    if any(player['id'] == user_id for player in game['players']):
-        await ctx.send(f'{ctx.author.mention}, you have already joined the game.')
-        return
-
-    money_pool[user_id] -= bet
-
-    game['players'].append({
-        'id': user_id,
-        'hand': [deal_card(game['deck']), deal_card(game['deck'])],
-        'bet': bet,
-        'doubled_down': False
-    })
-
-    await ctx.send(f'{ctx.author.mention} has joined the game with a bet of ${bet}.')
-
-@bot.command(name='21start')
-async def start(ctx):
-    if ctx.guild.id not in games or len(games[ctx.guild.id]['players']) == 0:
-        await ctx.send('No players have joined the game yet.')
-        return
-
-    game = games[ctx.guild.id]
-    game['dealer_hand'] = [deal_card(game['deck']), deal_card(game['deck'])]
-    game['current_player'] = 0
-
-    await ctx.send(f"Dealer's showing card: {display_hand([game['dealer_hand'][0]])[0]}")
-    await play_turn(ctx, bot)
-
-@bot.command(name='bal')
-async def balance(ctx):
-    user_id = str(ctx.author.id)
-    balance = money_pool.get(user_id, 1000)  # Default balance is 1000
-    await ctx.send(f'{ctx.author.mention}, your balance is ${balance}')
-
-@bot.command(name='resetbal')
-async def reset_balance(ctx):
-    user_id = str(ctx.author.id)
-    money_pool[user_id] = 1000  # Reset balance to default
-    save_money_pool()
-    await ctx.send(f'{ctx.author.mention}, your balance has been reset to $1000.')
-
-@bot.command(name='givebal')
-async def give(ctx, member: discord.Member, amount: int):
-    giver_id = str(ctx.author.id)
-    receiver_id = str(member.id)
-
-    if giver_id not in money_pool:
-        money_pool[giver_id] = 1000  # Initial balance for giver
-    if receiver_id not in money_pool:
-        money_pool[receiver_id] = 1000  # Initial balance for receiver
-
-    if amount <= 0:
-        await ctx.send(f'{ctx.author.mention}, the amount must be positive.')
-        return
-
-    if money_pool[giver_id] < amount:
-        await ctx.send(f'{ctx.author.mention}, you are too broke to give ${amount}.')
-        return
-
-    money_pool[giver_id] -= amount
-    money_pool[receiver_id] += amount
-    save_money_pool()
-
-    await ctx.send(f'{ctx.author.mention} has given ${amount} to {member.mention}.')
-
 @bot.command(name='eats')
 async def fetch_restaurants(ctx, city: str, radius: float = 3, *, category: str = None):
     restaurants, error = get_restaurants(city, radius, category)
@@ -523,9 +386,99 @@ async def fetch_address(ctx, restaurant_name: str, city: str):
     else:
         await ctx.send(f"Address of {name}: {address}")
 
-@bot.command(name="jtest")
-async def on_message(message):
-    await message.channel.send("Test command")
+@bot.tree.command(name='blackjack', description='let\'s lose some money')
+@app_commands.describe(bet='Your bet amount', multiplayer='Join a table ... y/n(default)')
+async def blackjack(interaction: discord.Interaction, bet: int, multiplayer: str = 'n'):
+    if interaction.guild.id not in games:
+        games[interaction.guild.id] = {
+            'players': [],
+            'deck': deck_template.copy(),
+            'dealer_hand': [],
+            'current_player': 0,
+            'multiplayer': False
+        }
 
+    game = games[interaction.guild.id]
+    user_id = str(interaction.user.id)
+
+    if user_id not in money_pool:
+        money_pool[user_id] = {'current': 1000, 'historical_high': 1000}  # Initial balance and historical high
+
+    if bet is None or not isinstance(bet,int):
+        await interaction.response.send_message(f'{interaction.user.mention}, you need to place a valid bet to play. The minimum to play is $20. Usage: `!21 <bet>`', ephemeral=True)
+        return
+    
+    if bet < 20:
+        await interaction.response.send_message(f'{interaction.user.mention}, your bet is too broke. The minimum to play is $20.', ephemeral=True)
+        return
+    
+    if bet > money_pool[user_id]['current']:
+        await interaction.response.send_message(f'{interaction.user.mention}, you are too broke to place that bet.', ephemeral=True)
+        return
+    
+    money_pool[user_id]['current'] -= bet
+
+    if multiplayer is not None and multiplayer.lower() == 'join':
+        game['multiplayer'] = True
+
+    if game['multiplayer']:
+        if any(player['id'] == user_id for player in game['players']):
+            await interaction.response.send_message(f'{interaction.user.mention}, you have already joined the game.', ephemeral=True)
+            return
+        
+        game['players'].append({
+            'id': user_id,
+            'hands': [[deal_card(game['deck']), deal_card(game['deck'])]],
+            'bets': [bet],
+            'current_hand_index': 0
+        })
+
+        await interaction.response.send_message(f'{interaction.user.mention} has joined the game with a bet of ${bet}.')
+    else:
+        game['players'] = [{
+            'id': user_id,
+            'hands': [[deal_card(game['deck']), deal_card(game['deck'])]],
+            'bets': [bet],
+            'current_hand_index': 0
+        }]
+        await start_blackjack(interaction)
+
+@bot.tree.command(name='blackjack_start', description='Start blackjack session')
+async def start_blackjack(interaction: discord.Interaction):
+    if interaction.guild.id not in games or len(games[interaction.guild.id]['players']) == 0:
+        await interaction.response.send_message('No players have joined the game yet.', ephemeral=True)
+        return
+
+    game = games[interaction.guild.id]
+    game['dealer_hand'] = [deal_card(game['deck']), deal_card(game['deck'])]
+    game['current_player'] = 0
+
+    await interaction.response.send_message(f"Dealer's showing card: {display_hand([game['dealer_hand'][0]])[0]}")
+    await play_turn(interaction, bot)
+
+@bot.tree.command(name='balance', description='Check your gambalance')
+async def balance(interaction: discord.Interaction):
+    user_id = str(interaction.user.id)
+    balance = money_pool.get(user_id, {}).get('current', 1000)  # Default balance is 1000
+    await interaction.response.send_message(f'{interaction.user.mention}, your balance is ${balance}', ephemeral=True)
+
+@bot.tree.command(name='resetbalance', description='Reset your gambalance to $1000')
+async def reset_balance(interaction: discord.Interaction):
+    user_id = str(interaction.user.id)
+    if user_id not in money_pool:
+        money_pool[user_id] = {'current': 1000, 'historical_high': 1000}
+    else:
+        money_pool[user_id]['current'] = 1000
+    save_money_pool()
+    await interaction.response.send_message(f'{interaction.user.mention}, your balance has been reset to $1000.', ephemeral=True)
+
+@bot.command(name='leaderboard')
+async def leaderboard(ctx):
+    sorted_balances = sorted(money_pool.items(), key=lambda item: item[1]['historical_high'], reverse=True)
+    leaderboard_message = '**Leaderboard (Historical Highs):**\n'
+    for i, (user_id, balances) in enumerate(sorted_balances[:10], start=1):  # Show top 10 players
+        user = await bot.fetch_user(int(user_id))
+        leaderboard_message += f'{i}. {user.name} - ${balances["historical_high"]}\n'
+    await ctx.send(leaderboard_message)
 
 bot.run(DISCORD_TOKEN)
