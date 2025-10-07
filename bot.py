@@ -15,23 +15,28 @@ from bs4 import BeautifulSoup
 load_dotenv()
 CHATGPT_TOKEN = os.getenv('CHATGPT_API_KEY')
 DISCORD_TOKEN = os.getenv('DISCORD_BOT_API_KEY')
-GEMINI_TOKEN = os.getenv('GOOGLE_AI_API_KEY')
+GOOGLE_GEO_PLACES_API_KEY=os.getenv('GOOGLE_GEO_PLACES_API_KEY')
 GUILD_ID = os.getenv('GUILD_ID')
 openai.api_key = CHATGPT_TOKEN
 
-intents = discord.Intents.all()
+intents = discord.Intents.default()
+intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 async def query_chatgpt(prompt):
-    response = openai.Completion.create(
-        engine="text-davinci-003",
-        prompt=prompt,
-        max_tokens=1024,
-        n=1,
-        stop=None,
-        temperature=0.5
-    )
-    return response.choices[0].text
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            max_tokens=1024
+        )
+        return response.choices[0].message["content"]
+    except openai.error.OpenAIError as e:
+        return f"⚠️ API Error: {e}"
 
 async def get_file(message):
     # Check if the message has an attached image
@@ -73,111 +78,57 @@ def resize_image(file):
     byte_array = byte_stream.getvalue()
     return byte_array
 
-async def query_dalle(prompt):
-    response = openai.Image.create(
-        prompt=prompt,
-        n=1,
-        size="1024x1024"
-    )
-    return response['data'][0]['url']
-
-async def query_dalle_edit(prompt,file):
-    byte_array = resize_image(file)
+async def query_dalle(prompt: str) -> str:
     try:
-        response = openai.Image.create_edit(
+        response = openai.images.generate(
+            model="dall-e-3",
+            prompt=prompt,
+            size="1024x1024",
+            n=1
+        )
+        return response.data[0].url
+
+    except openai.error.OpenAIError as e:
+        return f"⚠️ API Error: {e}"
+
+async def query_dalle_edit(prompt: str, file: BytesIO) -> str:
+    try:
+        byte_array = resize_image(file)
+        response = openai.images.edit(
+            model="dall-e-3",
             image=byte_array,
-            # mask=open("mask.png", "rb"),
             prompt=prompt,
             n=1,
             size="1024x1024"
         )
-        print(response['data'][0]['url'])
+        return response.data[0].url
     except openai.error.OpenAIError as e:
-        print(e.http_status)
-        print(e.error)
-        return e.error['message']
+        return f"⚠️ API Error: {e}"
 
-    return response['data'][0]['url']
-
-async def query_dalle_variation(file):
-    byte_array = resize_image(file)
+async def query_dalle_variation(file: BytesIO) -> str:
     try:
-        response = openai.Image.create_variation(
-        image=byte_array,
-        n=1,
-        size="1024x1024"
+        byte_array = resize_image(file)
+        response = openai.images.variations(
+            model="dall-e-3",
+            image=byte_array,
+            n=1,
+            size="1024x1024"
         )
-        print(response['data'][0]['url'])
+        return response.data[0].url
     except openai.error.OpenAIError as e:
-        print(e.http_status)
-        print(e.error)
-        return e.error['message']
-    
-    return response['data'][0]['url']
-
-def query_gemini(prompt):
-    try:
-        response = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GEMINI_TOKEN}",
-            headers={"Content-Type": "application/json"},
-            json={
-                "contents":[
-                    {
-                        "parts":[
-                            {"text": prompt}
-                        ]
-                    }
-                ],
-                "safetySettings": [
-                    {
-                        "category": "HARM_CATEGORY_HARASSMENT",
-                        "threshold": "BLOCK_NONE"
-                    },
-                    {
-                        "category": "HARM_CATEGORY_HATE_SPEECH",
-                        "threshold": "BLOCK_NONE"
-                    },
-                    {
-                        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-                        "threshold": "BLOCK_NONE"
-                    },
-                    {
-                        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                        "threshold": "BLOCK_NONE"
-                    },
-                ],
-                "generationConfig": {
-                    "stopSequences": [
-                        "Title"
-                    ],
-                    "temperature": 0.9,
-                    "maxOutputTokens": 800#,
-                    # "topP": 1,
-                    # "topK": 1
-                }
-            }
-        )
-        response.raise_for_status()  # Raise exception for non-2xx status codes
-        return response
-    except requests.exceptions.RequestException as e:
-        if isinstance(e, requests.exceptions.ConnectionError):
-            error_message = f"Failed to connect to the API. Please check your internet connection\nStatus code: {response.status_code}"
-        elif isinstance(e, requests.exceptions.Timeout):
-            error_message = f"Request timed out. Please try again later.\nStatus code: {response.status_code}"
-        else:
-            error_message = f"An unexpected error occurred: {e}\nsafetyRatings: {response.json()['candidates'][0]['safetyRatings']}"
-        return error_message
+        return f"⚠️ API Error: {e}"
 
 def miles_to_meters(miles):
     return miles * 1609.34
 
 def geocode_city(city):
-    geocode_url = f'https://maps.googleapis.com/maps/api/geocode/json?address={city}&key={GEMINI_TOKEN}'
+    geocode_url = f'https://maps.googleapis.com/maps/api/geocode/json?address={city}&key={GOOGLE_GEO_PLACES_API_KEY}'
     response = requests.get(geocode_url).json()
     if response['status'] == 'OK':
         location = response['results'][0]['geometry']['location']
         return location['lat'], location['lng']
     else:
-        return None, None
+        return None, None, f"Geocoding error: {response['status']}"
 
 def get_restaurants(city, radius_miles=35, category=None):
     # Convert miles to meters
@@ -191,7 +142,7 @@ def get_restaurants(city, radius_miles=35, category=None):
     # Places API to find restaurants in the given radius and category
     places_url = (f'https://maps.googleapis.com/maps/api/place/nearbysearch/json'
                   f'?location={lat},{lng}&radius={radius_meters}&type=restaurant'
-                  f'&key={GEMINI_TOKEN}')
+                  f'&key={GOOGLE_GEO_PLACES_API_KEY}')
     
     if category:
         places_url += f'&keyword={category}'
@@ -217,7 +168,7 @@ def get_restaurant_address(restaurant_name, city):
     
     # Places API to search for the restaurant by name near the city location
     places_url = (f'https://maps.googleapis.com/maps/api/place/textsearch/json'
-                  f'?query={restaurant_name} restaurant in {city}&location={lat},{lng}&key={GEMINI_TOKEN}')
+                  f'?query={restaurant_name} restaurant in {city}&location={lat},{lng}&key={GOOGLE_GEO_PLACES_API_KEY}')
     
     places_response = requests.get(places_url).json()
     
@@ -288,6 +239,7 @@ async def on_message(message):
             )
             embed.set_image(url=thumbnail_url)
             await message.channel.send(embed=embed)
+    await bot.process_commands(message)
 
 @bot.tree.command(name="jhelp", description="Prints The James Roll README.md")
 async def help(Interaction: discord.interactions):
@@ -296,7 +248,7 @@ async def help(Interaction: discord.interactions):
     await Interaction.response.send_message(text, ephemeral=True)
 
 @bot.command(name="jhoose")
-async def on_message(ctx, *, choices: str):
+async def jhoose(ctx, *, choices: str):
     # Split the input string into a list of choices
     choices_list = [choice.strip() for choice in choices.split(',')]
     
@@ -308,65 +260,59 @@ async def on_message(ctx, *, choices: str):
     await ctx.send(content=f"The result is: {result}")
 
 @bot.command(name="jpt")
-async def on_message(ctx, *, message: str):
-    waiting_message = await ctx.send("...")
-    try:
-        prompt = message
-        response = await query_chatgpt(prompt)
-        embed = await format_embed(response)
-        await ctx.send(embed=embed)
-    finally:
-        await waiting_message.delete()
+async def jpt(ctx, *, prompt: str):
+    async with ctx.typing():
+        try:
+            response = await query_chatgpt(prompt)
+            embed = discord.Embed(
+                title="🤖 The James rolls...",
+                description=response,
+                color=0x00FF00
+            )
+            await ctx.send(embed=embed)
+        except requests.exceptions.RequestException as e:
+            await ctx.send(f"⚠️ API request failed: {e}")
+        except Exception as e:
+            await ctx.send(f"⚠️ Unexpected error: {e}")
 
 @bot.command(name="jimg")
-async def on_message(ctx, *, message: str):
-    waiting_message = await ctx.send("...")
+async def jimg(ctx, *, prompt: str):
+    waiting_message = await ctx.send("🖌 The James Roll is generating your image...")
     try:
-        prompt = message
-        image_url = await query_dalle(prompt)
-        await ctx.send(image_url)
+        url = await query_dalle(prompt)
+        embed = discord.Embed(title="🖼 DALL·E Image", description=prompt, color=0x00FF00)
+        embed.set_image(url=url)
+        await ctx.send(embed=embed)
     finally:
         await waiting_message.delete()
 
 @bot.command(name="jedit")
-async def on_message(ctx, *, message: str):
-    waiting_message = await ctx.send("...")
+async def jedit(ctx, *, prompt: str):
+    waiting_message = await ctx.send("✏️ The James Roll is editing your image...")
     try:
-        prompt = message
-        file = await get_file(message)
-        edited_image = await query_dalle_edit(prompt,file)
-        await ctx.send(edited_image)
+        file = await get_file(ctx.message)
+        if file is None:
+            return
+        url = await query_dalle_edit(prompt, file)
+        embed = discord.Embed(title="✏️ Edited Image", description=prompt, color=0x00FF00)
+        embed.set_image(url=url)
+        await ctx.send(embed=embed)
     finally:
         await waiting_message.delete()
 
 @bot.command(name="jvari")
-async def on_message(ctx, *, message: str):
-    waiting_message = await ctx.send("...")
+async def jvari(ctx):
+    waiting_message = await ctx.send("🔄 The James is rolling your image...")
     try:
-        file = await get_file(message)
-        edited_image = await query_dalle_variation(file)
-        await ctx.send(edited_image)
-    finally:
-        await waiting_message.delete()
-
-@bot.command(name="jem")
-async def on_message(ctx, *, message: str):
-    waiting_message = await ctx.send("...")
-    try:
-        prompt = message
-        # print(prompt)
-        response = query_gemini(prompt)
-        # print(response.json())
-        text_response = response.json()['candidates'][0]['content']['parts'][0].get('text')
-        embed = await format_embed(text_response)
+        file = await get_file(ctx.message)
+        if file is None:
+            return
+        url = await query_dalle_variation(file)
+        embed = discord.Embed(title="🔄 Image Variation", color=0x00FF00)
+        embed.set_image(url=url)
         await ctx.send(embed=embed)
     finally:
         await waiting_message.delete()
-    ### DEBUG INFO ###
-    ## token_count = response.json()['candidates'][0]['tokenCount'] #doesn't exist?
-    finish_reason = response.json()['candidates'][0]['finishReason']
-    safety_ratings = response.json()['candidates'][0]['safetyRatings']
-    await ctx.send(f"**Debug info**\nFinish Reason:```{finish_reason}```Safety Ratings:```{safety_ratings}```")
 
 @bot.command(name='eats')
 async def fetch_restaurants(ctx, city: str, radius: float = 3, *, category: str = None):
