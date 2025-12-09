@@ -88,7 +88,7 @@ async def query_dalle(prompt: str) -> str:
         )
         return response.data[0].url
 
-    except openai.error.OpenAIError as e:
+    except openai.OpenAIError as e:
         return f"⚠️ API Error: {e}"
 
 async def query_dalle_edit(prompt: str, file: BytesIO) -> str:
@@ -102,7 +102,7 @@ async def query_dalle_edit(prompt: str, file: BytesIO) -> str:
             size="1024x1024"
         )
         return response.data[0].url
-    except openai.error.OpenAIError as e:
+    except openai.OpenAIError as e:
         return f"⚠️ API Error: {e}"
 
 async def query_dalle_variation(file: BytesIO) -> str:
@@ -115,7 +115,7 @@ async def query_dalle_variation(file: BytesIO) -> str:
             size="1024x1024"
         )
         return response.data[0].url
-    except openai.error.OpenAIError as e:
+    except openai.OpenAIError as e:
         return f"⚠️ API Error: {e}"
 
 def miles_to_meters(miles):
