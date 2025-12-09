@@ -26,7 +26,7 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 async def query_chatgpt(prompt):
     try:
         response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
+            model="gpt-5-nano",
             messages=[
                 {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": prompt}
@@ -81,7 +81,7 @@ def resize_image(file):
 async def query_dalle(prompt: str) -> str:
     try:
         response = openai.images.generate(
-            model="dall-e-3",
+            model="gpt-image-1-mini",
             prompt=prompt,
             size="1024x1024",
             n=1
@@ -95,7 +95,7 @@ async def query_dalle_edit(prompt: str, file: BytesIO) -> str:
     try:
         byte_array = resize_image(file)
         response = openai.images.edit(
-            model="dall-e-3",
+            model="gpt-image-1-mini",
             image=byte_array,
             prompt=prompt,
             n=1,
@@ -109,7 +109,7 @@ async def query_dalle_variation(file: BytesIO) -> str:
     try:
         byte_array = resize_image(file)
         response = openai.images.variations(
-            model="dall-e-3",
+            model="gpt-image-1-mini",
             image=byte_array,
             n=1,
             size="1024x1024"
