@@ -1,7 +1,7 @@
 .env
 __pycache__
 .python-version
-bot.py.old
+*.old
 noembed-bot.py
 money_pool.json
 .DS_Store

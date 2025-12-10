@@ -1,430 +1,503 @@
-import discord
 import os
-import openai
+import logging
+import asyncio
+import time
+from io import BytesIO
+from typing import Optional, Tuple, List, Dict
+
+import aiohttp
+import discord
+from discord.ext import commands
 from dotenv import load_dotenv
 from PIL import Image
-import requests
-from io import BytesIO
-import random
-from discord import app_commands
-from discord.ext import commands
-import asyncio
-from blackjack import *
 from bs4 import BeautifulSoup
 
+from openai import OpenAI
+from openai import error as openai_error
+
+import random
+
 load_dotenv()
-CHATGPT_TOKEN = os.getenv('CHATGPT_API_KEY')
-DISCORD_TOKEN = os.getenv('DISCORD_BOT_API_KEY')
-GOOGLE_GEO_PLACES_API_KEY=os.getenv('GOOGLE_GEO_PLACES_API_KEY')
-GUILD_ID = os.getenv('GUILD_ID')
-openai.api_key = CHATGPT_TOKEN
+
+DISCORD_TOKEN = os.getenv("DISCORD_BOT_API_KEY")
+OPENAI_API_KEY = os.getenv("CHATGPT_API_KEY")
+GOOGLE_API_KEY = os.getenv("GOOGLE_GEO_PLACES_API_KEY")
+GUILD_ID = int(os.getenv("GUILD_ID")) if os.getenv("GUILD_ID") else None
+BOT_OWNER_ID = int(os.getenv("BOT_OWNER_ID")) if os.getenv("BOT_OWNER_ID") else None
+ALLOWED_BLACKJACK_CHANNEL_ID = int(os.getenv("ALLOWED_BLACKJACK_CHANNEL_ID")) if os.getenv("ALLOWED_BLACKJACK_CHANNEL_ID") else None
+ALLOWED_BLACKJACK_THREAD_ID = int(os.getenv("ALLOWED_BLACKJACK_THREAD_ID")) if os.getenv("ALLOWED_BLACKJACK_THREAD_ID") else None
+
+if not DISCORD_TOKEN:
+    raise RuntimeError("Missing DISCORD_BOT_API_KEY in environment")
+if not OPENAI_API_KEY:
+    raise RuntimeError("Missing CHATGPT_API_KEY in environment")
+if not GOOGLE_API_KEY:
+    logging.warning("No GOOGLE_GEO_PLACES_API_KEY set — Google features will fail")
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger("thejamesroll-bot")
+
+# Blackjack - load money pool and start autosave
+from money_pool import get_money_pool_singleton
+mp = get_money_pool_singleton()
 
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix='!', intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-async def query_chatgpt(prompt):
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-5-nano",
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.7,
-            max_tokens=1024
-        )
-        return response.choices[0].message["content"]
-    except openai.error.OpenAIError as e:
-        return f"⚠️ API Error: {e}"
+client = OpenAI(api_key=OPENAI_API_KEY)
 
-async def get_file(message):
-    # Check if the message has an attached image
-    if len(message.attachments) == 0:
-        await message.channel.send("Please attach an image to edit.")
-        return
+# aiohttp session (reuse)
+aio_session = aiohttp.ClientSession()
 
-    # Get the attached image file
-    attached_file = message.attachments[0]
+# Simple in-memory cache for geocoding
+_GEOCODE_CACHE: Dict[str, Tuple[float, float, float]] = {}
+# { city_lower: (lat, lng, timestamp) }
+GEOCODE_TTL = 60 * 60 * 24  # 24 hours
 
-    # Download the attached image file
-    response = requests.get(attached_file.url)
-    file = BytesIO(response.content)
-    return file
-
-def resize_image(file):
-    desired_size = 1028
-
-    im = Image.open(file)
-    old_size = im.size  # old_size[0] is in (width, height) format
-
-    ratio = float(desired_size)/max(old_size)
-    new_size = tuple([int(x*ratio) for x in old_size])
-    # use thumbnail() or resize() method to resize the input image
-
-    # thumbnail is a in-place operation
-
-    # im.thumbnail(new_size, Image.ANTIALIAS)
-
+# Helpers: images
+def resize_image_to_square_bytes(source: BytesIO, size: int = 1024) -> BytesIO:
+    """
+    Resize image to a square (padding preserved) and return BytesIO (PNG).
+    """
+    source.seek(0)
+    im = Image.open(source).convert("RGBA")
+    old_size = im.size
+    ratio = float(size) / max(old_size)
+    new_size = tuple(int(x * ratio) for x in old_size)
     im = im.resize(new_size, Image.Resampling.LANCZOS)
 
-    # create a new image and paste the resized on it
-    new_im = Image.new("RGBA", (desired_size, desired_size))
-    new_im.paste(im, ((desired_size-new_size[0])//2,
-                        (desired_size-new_size[1])//2))
+    # create square canvas and paste
+    new_im = Image.new("RGBA", (size, size), (255, 255, 255, 0))
+    paste_pos = ((size - new_size[0]) // 2, (size - new_size[1]) // 2)
+    new_im.paste(im, paste_pos, im if im.mode == "RGBA" else None)
 
-    byte_stream = BytesIO()
-    new_im.save(byte_stream, format='PNG')
-    byte_array = byte_stream.getvalue()
-    return byte_array
+    out = BytesIO()
+    new_im.save(out, format="PNG")
+    out.seek(0)
+    return out
 
-async def query_dalle(prompt: str) -> str:
+async def download_attachment_to_bytes(url: str) -> Optional[BytesIO]:
+    """
+    Download an attachment URL (Discord CDN) to BytesIO using aiohttp.
+    """
     try:
-        response = openai.images.generate(
-            model="gpt-image-1-mini",
-            prompt=prompt,
-            size="1024x1024",
-            n=1
-        )
-        return response.data[0].url
-
-    except openai.OpenAIError as e:
-        return f"⚠️ API Error: {e}"
-
-async def query_dalle_edit(prompt: str, file: BytesIO) -> str:
-    try:
-        byte_array = resize_image(file)
-        response = openai.images.edit(
-            model="gpt-image-1-mini",
-            image=byte_array,
-            prompt=prompt,
-            n=1,
-            size="1024x1024"
-        )
-        return response.data[0].url
-    except openai.OpenAIError as e:
-        return f"⚠️ API Error: {e}"
-
-async def query_dalle_variation(file: BytesIO) -> str:
-    try:
-        byte_array = resize_image(file)
-        response = openai.images.variations(
-            model="gpt-image-1-mini",
-            image=byte_array,
-            n=1,
-            size="1024x1024"
-        )
-        return response.data[0].url
-    except openai.OpenAIError as e:
-        return f"⚠️ API Error: {e}"
-
-def miles_to_meters(miles):
-    return miles * 1609.34
-
-def geocode_city(city):
-    geocode_url = f'https://maps.googleapis.com/maps/api/geocode/json?address={city}&key={GOOGLE_GEO_PLACES_API_KEY}'
-    response = requests.get(geocode_url).json()
-    if response['status'] == 'OK':
-        location = response['results'][0]['geometry']['location']
-        return location['lat'], location['lng']
-    else:
-        return None, None, f"Geocoding error: {response['status']}"
-
-def get_restaurants(city, radius_miles=35, category=None):
-    # Convert miles to meters
-    radius_meters = miles_to_meters(radius_miles)
-    
-    # Geocode the city to get latitude and longitude
-    lat, lng = geocode_city(city)
-    if lat is None or lng is None:
-        return None, "Geocoding error: City not found or API error."
-    
-    # Places API to find restaurants in the given radius and category
-    places_url = (f'https://maps.googleapis.com/maps/api/place/nearbysearch/json'
-                  f'?location={lat},{lng}&radius={radius_meters}&type=restaurant'
-                  f'&key={GOOGLE_GEO_PLACES_API_KEY}')
-    
-    if category:
-        places_url += f'&keyword={category}'
-
-    places_url += '&rankby=prominence&limit=10'
-
-    places_response = requests.get(places_url).json()
-    
-    if places_response['status'] != 'OK':
-        return None, f"Error: {places_response['status']}"
-    
-    restaurants = places_response['results'][:10]
-    # restaurant_list = [f"{restaurant['name']} - {restaurant['vicinity']}" for restaurant in restaurants]
-    restaurant_list = [f"**{i + 1}. {restaurant['name']}**{restaurant['vicinity']}" for i, restaurant in enumerate(restaurants)]
-
-    return restaurant_list, None
-
-def get_restaurant_address(restaurant_name, city):
-    # Geocode the city to get latitude and longitude
-    lat, lng = geocode_city(city)
-    if lat is None or lng is None:
-        return None, "Geocoding error: City not found or API error."
-    
-    # Places API to search for the restaurant by name near the city location
-    places_url = (f'https://maps.googleapis.com/maps/api/place/textsearch/json'
-                  f'?query={restaurant_name} restaurant in {city}&location={lat},{lng}&key={GOOGLE_GEO_PLACES_API_KEY}')
-    
-    places_response = requests.get(places_url).json()
-    
-    if places_response['status'] != 'OK':
-        return None, f"Error: {places_response['status']}"
-    
-    if not places_response['results']:
-        return None, "Restaurant not found."
-    
-    restaurant = places_response['results'][0]
-    name = restaurant['name']
-    address = restaurant['formatted_address']
-    
-    return name, address, None
-
-async def get_rednote_info(url):
-    try:
-        response = requests.get(url)
-        response.raise_for_status()  # Raise an exception for bad status codes
-        soup = BeautifulSoup(response.content, 'html.parser')
-        # Extract relevant information (adjust selectors as needed)
-        title_div = soup.find('div', id='detail-title', class_='title')
-        if title_div:
-            title = title_div.text.strip() 
-        else:
-            title = "Could not find title" 
-        thumbnail_tag = soup.find('meta', property='og:image')
-        if thumbnail_tag:
-            thumbnail_url = thumbnail_tag['content']
-        else:
-            thumbnail_url = None
-        return title, thumbnail_url
+        async with aio_session.get(url, timeout=30) as resp:
+            if resp.status != 200:
+                logger.warning("Attachment download failed %s status=%s", url, resp.status)
+                return None
+            data = await resp.read()
+            return BytesIO(data)
     except Exception as e:
-        print(f"Error fetching RedNote info: {e}")
+        logger.exception("Failed to download attachment: %s", e)
+        return None
+
+# Helpers: Google Geocoding & Places (async)
+async def geocode_city_async(city: str) -> Tuple[Optional[float], Optional[float], Optional[str]]:
+    """
+    Return (lat, lng, error). Uses simple in-memory cache.
+    """
+    if not GOOGLE_API_KEY:
+        return None, None, "Google API key not configured"
+
+    key = city.strip().lower()
+    cached = _GEOCODE_CACHE.get(key)
+    now = time.time()
+    if cached and now - cached[2] < GEOCODE_TTL:
+        return cached[0], cached[1], None
+
+    url = "https://maps.googleapis.com/maps/api/geocode/json"
+    params = {"address": city, "key": GOOGLE_API_KEY}
+    try:
+        async with aio_session.get(url, params=params, timeout=15) as resp:
+            j = await resp.json()
+    except Exception as e:
+        logger.exception("Geocode request failed: %s", e)
+        return None, None, "Network/geocode request failed"
+
+    status = j.get("status")
+    if status != "OK":
+        logger.warning("Geocode API returned status=%s for city=%s", status, city)
+        return None, None, status
+
+    loc = j["results"][0]["geometry"]["location"]
+    _GEOCODE_CACHE[key] = (loc["lat"], loc["lng"], now)
+    return loc["lat"], loc["lng"], None
+
+async def get_restaurants_async(city: str, radius_miles: float = 3, category: Optional[str] = None) -> Tuple[Optional[List[str]], Optional[str]]:
+    lat, lng, err = await geocode_city_async(city)
+    if err:
+        return None, err
+
+    url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
+    radius_m = max(50, int(radius_miles * 1609.34))  # minimal radius guard
+    params = {
+        "location": f"{lat},{lng}",
+        "radius": radius_m,
+        "type": "restaurant",
+        "key": GOOGLE_API_KEY,
+    }
+    if category:
+        params["keyword"] = category
+
+    try:
+        async with aio_session.get(url, params=params, timeout=15) as resp:
+            j = await resp.json()
+    except Exception as e:
+        logger.exception("Places API request failed: %s", e)
+        return None, "Network/Places request failed"
+
+    status = j.get("status")
+    if status != "OK":
+        if status == "ZERO_RESULTS":
+            return [], None
+        logger.warning("Places API status=%s", status)
+        return None, status
+
+    results = j.get("results", [])[:10]
+    formatted = [f"**{i+1}. {r.get('name')}** — {r.get('vicinity','No address')}" for i, r in enumerate(results)]
+    return formatted, None
+
+async def get_restaurant_address_async(name: str, city: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    lat, lng, err = await geocode_city_async(city)
+    if err:
+        return None, None, err
+
+    url = "https://maps.googleapis.com/maps/api/place/textsearch/json"
+    params = {
+        "query": f"{name} restaurant in {city}",
+        "location": f"{lat},{lng}",
+        "key": GOOGLE_API_KEY,
+    }
+    try:
+        async with aio_session.get(url, params=params, timeout=15) as resp:
+            j = await resp.json()
+    except Exception as e:
+        logger.exception("Places textsearch failed: %s", e)
+        return None, None, "Network/Places request failed"
+
+    status = j.get("status")
+    if status != "OK":
+        return None, None, status
+
+    if not j.get("results"):
+        return None, None, "ZERO_RESULTS"
+
+    r = j["results"][0]
+    return r.get("name"), r.get("formatted_address"), None
+
+# Helpers: OpenAI wrappers
+async def query_chatgpt_async(prompt: str, system_prompt: Optional[str] = None, model: str = "gpt-4o-mini") -> str:
+    """
+    Query OpenAI chat endpoint using the new OpenAI client.
+    Note: client.chat.completions.create is synchronous in the SDK; we wrap in executor.
+    """
+    if system_prompt is None:
+        system_prompt = "You are a helpful assistant."
+
+    # The OpenAI python client might be sync; call in executor to avoid blocking event loop.
+    loop = asyncio.get_event_loop()
+
+    def do_call():
+        try:
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}],
+                temperature=0.7,
+                max_tokens=1024
+            )
+            # Return the textual reply
+            return resp.choices[0].message["content"]
+        except openai_error.OpenAIError as e:
+            logger.exception("OpenAI error: %s", e)
+            raise
+
+    try:
+        result = await loop.run_in_executor(None, do_call)
+        return result
+    except Exception as e:
+        return f"⚠️ OpenAI error: {e}"
+
+async def dalle_generate_async(prompt: str, model: str = "dall-e-3", size: str = "1024x1024") -> Tuple[Optional[str], Optional[str]]:
+    """
+    Generate image URL (returns (url, error))
+    Note: If the SDK's images methods are sync, run in executor.
+    """
+    loop = asyncio.get_event_loop()
+
+    def do_call():
+        try:
+            resp = client.images.generate(model=model, prompt=prompt, size=size, n=1)
+            return resp.data[0].url
+        except openai_error.OpenAIError as e:
+            logger.exception("OpenAI images error: %s", e)
+            raise
+
+    try:
+        url = await loop.run_in_executor(None, do_call)
+        return url, None
+    except Exception as e:
+        return None, f"OpenAI images error: {e}"
+
+async def dalle_edit_async(image_bytes: BytesIO, prompt: str, model: str = "gpt-image-1") -> Tuple[Optional[str], Optional[str]]:
+    """
+    Edit an image using a model that supports editing (gpt-image-1 family).
+    Resize and pass binary bytes. Returns (url, error)
+    """
+    loop = asyncio.get_event_loop()
+    image_bytes.seek(0)
+    # The new SDK expects file-like; convert to bytes for direct call in executor.
+    image_content = image_bytes.read()
+
+    def do_call():
+        try:
+            resp = client.images.edit(model=model, image=image_content, prompt=prompt, n=1, size="1024x1024")
+            return resp.data[0].url
+        except openai_error.OpenAIError as e:
+            logger.exception("OpenAI images.edit error: %s", e)
+            raise
+
+    try:
+        url = await loop.run_in_executor(None, do_call)
+        return url, None
+    except Exception as e:
+        return None, f"OpenAI images edit error: {e}"
+
+async def dalle_variation_async(image_bytes: BytesIO, model: str = "gpt-image-1") -> Tuple[Optional[str], Optional[str]]:
+    loop = asyncio.get_event_loop()
+    image_bytes.seek(0)
+    bc = image_bytes.read()
+
+    def do_call():
+        try:
+            resp = client.images.variations(model=model, image=bc, n=1, size="1024x1024")
+            return resp.data[0].url
+        except openai_error.OpenAIError as e:
+            logger.exception("OpenAI images.variations error: %s", e)
+            raise
+
+    try:
+        url = await loop.run_in_executor(None, do_call)
+        return url, None
+    except Exception as e:
+        return None, f"OpenAI images variations error: {e}"
+
+# Misc helpers (rednote scraping)
+async def get_rednote_info_async(url: str) -> Tuple[Optional[str], Optional[str]]:
+    try:
+        # Basic safety: only http/https
+        if not (url.startswith("http://") or url.startswith("https://")):
+            return None, None
+
+        async with aio_session.get(url, timeout=15) as resp:
+            if resp.status != 200:
+                return None, None
+            text = await resp.text()
+
+        soup = BeautifulSoup(text, "html.parser")
+        title_div = soup.find("div", id="detail-title", class_="title")
+        title = title_div.text.strip() if title_div else None
+        thumb = None
+        m = soup.find("meta", property="og:image")
+        if m and m.get("content"):
+            thumb = m["content"]
+        return title, thumb
+    except Exception as e:
+        logger.exception("Failed to fetch rednote info: %s", e)
         return None, None
 
-async def format_embed(response):
-    embed = discord.Embed(title="The James Roll says...", description=response, color=0x00ff00)
-    return embed
-
-############### BOT COMMANDS ###############
-
-async def setup():
-    await bot.wait_until_ready()
-    bot.tree.copy_global_to(guild=discord.Object(id=GUILD_ID))
-    await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
+async def format_embed_async(text: str) -> discord.Embed:
+    emb = discord.Embed(title="The James Roll says...", description=text, color=0x00FF00)
+    return emb
 
 @bot.event
 async def on_ready():
-    print(f'Logged in as {bot.user.name}')
+    logger.info("Logged in as: %s (id=%s)", bot.user, bot.user.id)
+    # presence
     activity = discord.Activity(type=discord.ActivityType.watching, name="you poop")
     await bot.change_presence(status=discord.Status.dnd, activity=activity)
-    await setup()
+
+    # sync slash commands for a single guild (faster) if GUILD_ID provided
+    try:
+        if GUILD_ID:
+            guild_obj = discord.Object(id=GUILD_ID)
+            logger.info("Syncing commands to guild %s", GUILD_ID)
+            await bot.tree.sync(guild=guild_obj)
+        else:
+            logger.info("Syncing global commands (may take up to 1 hour to propagate)")
+            await bot.tree.sync()
+    except Exception as e:
+        logger.exception("Failed to sync commands: %s", e)
 
 @bot.event
-async def on_message(message):
+async def on_message(message: discord.Message):
+    # keep it light and safe
     if message.author == bot.user:
         return
 
-    if '://rednote.com/' in message.content or '://xhslink.com/a/' in message.content:
-        url = message.content.split(' ')[0]  # Get the first URL in the message
-        title, thumbnail_url = await get_rednote_info(url)
-        if title and thumbnail_url:
-            embed = discord.Embed(
-                title=title,
-                url=url,
-                color=0x00ff00
-            )
-            embed.set_image(url=thumbnail_url)
-            await message.channel.send(embed=embed)
+    # rednote quick preview
+    try:
+        txt = message.content.strip()
+        if "://rednote.com/" in txt or "://xhslink.com/a/" in txt:
+            url = txt.split()[0]
+            title, thumb = await get_rednote_info_async(url)
+            if title:
+                emb = discord.Embed(title=title, url=url, color=0x00FF00)
+                if thumb:
+                    emb.set_image(url=thumb)
+                await message.channel.send(embed=emb)
+    except Exception:
+        logger.exception("Error handling rednote in on_message")
+
+    # allow commands to process
     await bot.process_commands(message)
 
-@bot.tree.command(name="jhelp", description="Prints The James Roll README.md")
-async def help(Interaction: discord.interactions):
-    with open("readme.md", "r") as f:
-        text = f.read()
-    await Interaction.response.send_message(text, ephemeral=True)
-
 @bot.command(name="jhoose")
-async def jhoose(ctx, *, choices: str):
-    # Split the input string into a list of choices
-    choices_list = [choice.strip() for choice in choices.split(',')]
-    
+async def jhoose(ctx: commands.Context, *, choices: str):
+    choices_list = [c.strip() for c in choices.split(",") if c.strip()]
     if len(choices_list) < 2:
         await ctx.send("Please provide at least two choices separated by commas.")
         return
-
-    result = random.choice(choices_list)
-    await ctx.send(content=f"The result is: {result}")
+    await ctx.send(f"The result is: **{random.choice(choices_list)}**")
 
 @bot.command(name="jpt")
-async def jpt(ctx, *, prompt: str):
-    async with ctx.typing():
-        try:
-            response = await query_chatgpt(prompt)
-            embed = discord.Embed(
-                title="🤖 The James rolls...",
-                description=response,
-                color=0x00FF00
-            )
-            await ctx.send(embed=embed)
-        except requests.exceptions.RequestException as e:
-            await ctx.send(f"⚠️ API request failed: {e}")
-        except Exception as e:
-            await ctx.send(f"⚠️ Unexpected error: {e}")
+async def jpt(ctx: commands.Context, *, prompt: str):
+    wait = await ctx.send("💬 The James Roll is thinking...")
+    try:
+        text = await query_chatgpt_async(prompt, model="gpt-4o-mini")
+        # split long messages to respect discord limit
+        if len(text) > 1900:
+            for chunk in [text[i:i+1900] for i in range(0, len(text), 1900)]:
+                await ctx.send(chunk)
+        else:
+            await ctx.send(text)
+    finally:
+        await wait.delete()
 
 @bot.command(name="jimg")
-async def jimg(ctx, *, prompt: str):
-    waiting_message = await ctx.send("🖌 The James Roll is generating your image...")
+async def jimg(ctx: commands.Context, *, prompt: str):
+    wait = await ctx.send("🎨 The James Roll is cooking...")
     try:
-        url = await query_dalle(prompt)
-        embed = discord.Embed(title="🖼 DALL·E Image", description=prompt, color=0x00FF00)
-        embed.set_image(url=url)
-        await ctx.send(embed=embed)
+        url, err = await dalle_generate_async(prompt, model="dall-e-3")
+        if err:
+            await ctx.send(f"⚠️ {err}")
+            return
+        emb = discord.Embed(title="🎨 Image", description=prompt)
+        emb.set_image(url=url)
+        await ctx.send(embed=emb)
     finally:
-        await waiting_message.delete()
+        await wait.delete()
 
 @bot.command(name="jedit")
-async def jedit(ctx, *, prompt: str):
-    waiting_message = await ctx.send("✏️ The James Roll is editing your image...")
+async def jedit(ctx: commands.Context, *, prompt: str):
+    wait = await ctx.send("🖌 The James Roll is cooking...")
     try:
-        file = await get_file(ctx.message)
-        if file is None:
+        if not ctx.message.attachments:
+            await ctx.send("Please attach an image to edit.")
             return
-        url = await query_dalle_edit(prompt, file)
-        embed = discord.Embed(title="✏️ Edited Image", description=prompt, color=0x00FF00)
-        embed.set_image(url=url)
-        await ctx.send(embed=embed)
+        file_url = ctx.message.attachments[0].url
+        src = await download_attachment_to_bytes(file_url)
+        if not src:
+            await ctx.send("Failed to download attachment.")
+            return
+        resized = resize_image_to_square_bytes(src, size=1024)
+        url, err = await dalle_edit_async(resized, prompt, model="gpt-image-1")
+        if err:
+            await ctx.send(f"⚠️ {err}")
+            return
+        emb = discord.Embed(title="🖌 Edited Image", description=prompt)
+        emb.set_image(url=url)
+        await ctx.send(embed=emb)
     finally:
-        await waiting_message.delete()
+        await wait.delete()
 
 @bot.command(name="jvari")
-async def jvari(ctx):
-    waiting_message = await ctx.send("🔄 The James is rolling your image...")
+async def jvari(ctx: commands.Context):
+    wait = await ctx.send("🔄 The James Roll is rolling...")
     try:
-        file = await get_file(ctx.message)
-        if file is None:
+        if not ctx.message.attachments:
+            await ctx.send("Please attach an image to vary.")
             return
-        url = await query_dalle_variation(file)
-        embed = discord.Embed(title="🔄 Image Variation", color=0x00FF00)
-        embed.set_image(url=url)
-        await ctx.send(embed=embed)
+        file_url = ctx.message.attachments[0].url
+        src = await download_attachment_to_bytes(file_url)
+        if not src:
+            await ctx.send("Failed to download attachment.")
+            return
+        resized = resize_image_to_square_bytes(src, size=1024)
+        url, err = await dalle_variation_async(resized, model="gpt-image-1")
+        if err:
+            await ctx.send(f"⚠️ {err}")
+            return
+        emb = discord.Embed(title="🔄 Variation")
+        emb.set_image(url=url)
+        await ctx.send(embed=emb)
     finally:
-        await waiting_message.delete()
+        await wait.delete()
 
-@bot.command(name='eats')
-async def fetch_restaurants(ctx, city: str, radius: float = 3, *, category: str = None):
-    restaurants, error = get_restaurants(city, radius, category)
-    if error:
-        await ctx.send(error)
-    else:
-        response = "\n\n".join(restaurants)
-        # embed = await format_embed(response)
-        await ctx.send(response if response else "No restaurants found.")
-
-@bot.command(name='addy')
-async def fetch_address(ctx, restaurant_name: str, city: str):
-    name, address, error = get_restaurant_address(restaurant_name, city)
-    if error:
-        await ctx.send(error)
-    else:
-        await ctx.send(f"Address of {name}: {address}")
-
-@bot.tree.command(name='blackjack', description='let\'s lose some money')
-@app_commands.describe(bet='Your bet amount', multiplayer='Join a table ... y/n(default)')
-async def blackjack(interaction: discord.Interaction, bet: int, multiplayer: str = 'n'):
-    if interaction.guild.id not in games:
-        games[interaction.guild.id] = {
-            'players': [],
-            'deck': deck_template.copy(),
-            'dealer_hand': [],
-            'current_player': 0,
-            'multiplayer': False
-        }
-
-    game = games[interaction.guild.id]
-    user_id = str(interaction.user.id)
-
-    if user_id not in money_pool:
-        money_pool[user_id] = {'current': 1000, 'historical_high': 1000}  # Initial balance and historical high
-
-    if bet is None or not isinstance(bet,int):
-        await interaction.response.send_message(f'{interaction.user.mention}, you need to place a valid bet to play. The minimum to play is $20. Usage: `!21 <bet>`', ephemeral=True)
-        return
-    
-    if bet < 20:
-        await interaction.response.send_message(f'{interaction.user.mention}, your bet is too broke. The minimum to play is $20.', ephemeral=True)
-        return
-    
-    if bet > money_pool[user_id]['current']:
-        await interaction.response.send_message(f'{interaction.user.mention}, you are too broke to place that bet.', ephemeral=True)
-        return
-    
-    money_pool[user_id]['current'] -= bet
-
-    if multiplayer is not None and multiplayer.lower() == 'join':
-        game['multiplayer'] = True
-
-    if game['multiplayer']:
-        if any(player['id'] == user_id for player in game['players']):
-            await interaction.response.send_message(f'{interaction.user.mention}, you have already joined the game.', ephemeral=True)
+@bot.command(name="eats")
+async def eats(ctx: commands.Context, city: str, radius: float = 3, *, category: Optional[str] = None):
+    wait = await ctx.send("🍽 Finding restaurants...")
+    try:
+        results, err = await get_restaurants_async(city, radius_miles=radius, category=category)
+        if err:
+            await ctx.send(f"⚠️ {err}")
             return
-        
-        game['players'].append({
-            'id': user_id,
-            'hands': [[deal_card(game['deck']), deal_card(game['deck'])]],
-            'bets': [bet],
-            'current_hand_index': 0
-        })
+        if not results:
+            await ctx.send(f"No restaurants found near {city}.")
+            return
+        emb = discord.Embed(title=f"Top Restaurants Near {city}", description="\n".join(results))
+        await ctx.send(embed=emb)
+    finally:
+        await wait.delete()
 
-        await interaction.response.send_message(f'{interaction.user.mention} has joined the game with a bet of ${bet}.')
+@bot.command(name="addy")
+async def addy(ctx: commands.Context, restaurant: str, *, city: str):
+    wait = await ctx.send("📍 Looking up address...")
+    try:
+        name, addr, err = await get_restaurant_address_async(restaurant, city)
+        if err:
+            await ctx.send(f"⚠️ {err}")
+            return
+        emb = discord.Embed(title=name, description=addr)
+        await ctx.send(embed=emb)
+    finally:
+        await wait.delete()
+
+# Blackjack
+def is_valid_channel(interaction: discord.Interaction) -> bool:
+    # Check if thread restriction exists
+    if ALLOWED_BLACKJACK_THREAD_ID:
+        return interaction.channel.id == ALLOWED_BLACKJACK_THREAD_ID
     else:
-        game['players'] = [{
-            'id': user_id,
-            'hands': [[deal_card(game['deck']), deal_card(game['deck'])]],
-            'bets': [bet],
-            'current_hand_index': 0
-        }]
-        await start_blackjack(interaction)
-
-@bot.tree.command(name='blackjack_start', description='Start blackjack session')
-async def start_blackjack(interaction: discord.Interaction):
-    if interaction.guild.id not in games or len(games[interaction.guild.id]['players']) == 0:
-        await interaction.response.send_message('No players have joined the game yet.', ephemeral=True)
-        return
-
-    game = games[interaction.guild.id]
-    game['dealer_hand'] = [deal_card(game['deck']), deal_card(game['deck'])]
-    game['current_player'] = 0
-
-    await interaction.response.send_message(f"Dealer's showing card: {display_hand([game['dealer_hand'][0]])[0]}")
-    await play_turn(interaction, bot)
-
-@bot.tree.command(name='balance', description='Check your gambalance')
-async def balance(interaction: discord.Interaction):
-    user_id = str(interaction.user.id)
-    balance = money_pool.get(user_id, {}).get('current', 1000)  # Default balance is 1000
-    await interaction.response.send_message(f'{interaction.user.mention}, your balance is ${balance}', ephemeral=True)
-
-@bot.tree.command(name='resetbalance', description='Reset your gambalance to $1000')
-async def reset_balance(interaction: discord.Interaction):
-    user_id = str(interaction.user.id)
-    if user_id not in money_pool:
-        money_pool[user_id] = {'current': 1000, 'historical_high': 1000}
+        # fallback: only allow channel
+        return interaction.channel.id == ALLOWED_BLACKJACK_CHANNEL_ID
+    
+@bot.event
+async def setup_hook():
+    await mp.load()
+    await mp.start_autosave(asyncio.get_event_loop())
+    # load blackjack cog
+    await bot.load_extension("cogs.blackjack_cog")
+    # sync tree
+    if GUILD_ID:
+        await bot.tree.sync(guild=discord.Object(id=GUILD_ID))
     else:
-        money_pool[user_id]['current'] = 1000
-    save_money_pool()
-    await interaction.response.send_message(f'{interaction.user.mention}, your balance has been reset to $1000.', ephemeral=True)
+        await bot.tree.sync()
 
-@bot.command(name='leaderboard')
-async def leaderboard(ctx):
-    sorted_balances = sorted(money_pool.items(), key=lambda item: item[1]['historical_high'], reverse=True)
-    leaderboard_message = '**Leaderboard (Historical Highs):**\n'
-    for i, (user_id, balances) in enumerate(sorted_balances[:10], start=1):  # Show top 10 players
-        user = await bot.fetch_user(int(user_id))
-        leaderboard_message += f'{i}. {user.name} - ${balances["historical_high"]}\n'
-    await ctx.send(leaderboard_message)
+# Graceful shutdown
+async def _cleanup():
+    logger.info("Shutting down: closing aiohttp session")
+    await aio_session.close()
 
-bot.run(DISCORD_TOKEN)
+def run_bot():
+    try:
+        bot.run(DISCORD_TOKEN)
+    finally:
+        # synchronous cleanup not ideal — but ensure aiohttp closed
+        loop = asyncio.get_event_loop()
+        if not loop.is_closed():
+            loop.run_until_complete(_cleanup())
+
+
+if __name__ == "__main__":
+    run_bot()
