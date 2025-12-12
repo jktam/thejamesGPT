@@ -6,28 +6,17 @@ on:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted   # because your runner is on the same server
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v0.1.6
+      - name: Add SSH key
+        uses: webfactory/ssh-agent@v0.9.0
         with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          script: |
-            cd ${{ secrets.SERVER_PROJECT_PATH }}
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
-            echo "Pulling latest code..."
-            git pull
-
-            echo "Updating dependencies..."
-            /usr/bin/pip3 install -r requirements.txt
-
-            echo "Restarting bot..."
-            sudo systemctl restart ${{ secrets.SERVER_SYSTEMD_BOT }}
-
-            echo "Deployment complete."
+      - name: Deploy
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@localhost "cd ${{ secrets.SERVER_PROJECT_PATH }} && git pull && systemctl restart ${{ secrets.SERVER_SYSTEMD_BOT }}"
