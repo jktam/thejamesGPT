@@ -19,4 +19,4 @@ jobs:
 
       - name: Deploy
         run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@localhost "cd ${{ secrets.SERVER_PROJECT_PATH }} && git pull && systemctl restart ${{ secrets.SERVER_SYSTEMD_BOT }}"
+          ssh -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@localhost "cd ${{ secrets.SERVER_PROJECT_PATH }} && git pull && sudo systemctl restart ${{ secrets.SERVER_SYSTEMD_BOT }}"
