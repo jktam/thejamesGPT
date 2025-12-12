@@ -13,7 +13,7 @@ from PIL import Image
 from bs4 import BeautifulSoup
 
 from openai import OpenAI
-from openai import error as openai_error
+from openai import OpenAIError
 
 import random
 
@@ -208,7 +208,7 @@ async def query_chatgpt_async(prompt: str, system_prompt: Optional[str] = None, 
             )
             # Return the textual reply
             return resp.choices[0].message["content"]
-        except openai_error.OpenAIError as e:
+        except OpenAIError as e:
             logger.exception("OpenAI error: %s", e)
             raise
 
@@ -229,7 +229,7 @@ async def dalle_generate_async(prompt: str, model: str = "dall-e-3", size: str =
         try:
             resp = client.images.generate(model=model, prompt=prompt, size=size, n=1)
             return resp.data[0].url
-        except openai_error.OpenAIError as e:
+        except OpenAIError as e:
             logger.exception("OpenAI images error: %s", e)
             raise
 
@@ -253,7 +253,7 @@ async def dalle_edit_async(image_bytes: BytesIO, prompt: str, model: str = "gpt-
         try:
             resp = client.images.edit(model=model, image=image_content, prompt=prompt, n=1, size="1024x1024")
             return resp.data[0].url
-        except openai_error.OpenAIError as e:
+        except OpenAIError as e:
             logger.exception("OpenAI images.edit error: %s", e)
             raise
 
@@ -272,7 +272,7 @@ async def dalle_variation_async(image_bytes: BytesIO, model: str = "gpt-image-1"
         try:
             resp = client.images.variations(model=model, image=bc, n=1, size="1024x1024")
             return resp.data[0].url
-        except openai_error.OpenAIError as e:
+        except OpenAIError as e:
             logger.exception("OpenAI images.variations error: %s", e)
             raise
 
