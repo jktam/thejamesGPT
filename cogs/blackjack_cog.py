@@ -58,7 +58,7 @@ class BlackjackButtons(discord.ui.View):
         self.stop()
 
     @discord.ui.button(label="Split", style=discord.ButtonStyle.danger, custom_id="split")
-    async def split(self, interaction: discord.Interation, button: discord.ui.Button):
+    async def split(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.selection = "split"
         await interaction.response.defer()
         self.stop()
