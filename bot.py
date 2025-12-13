@@ -48,7 +48,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 # aiohttp session (reuse)
-aio_session = aiohttp.ClientSession()
+aio_session: aiohttp.ClientSession | None = None
 
 # Simple in-memory cache for geocoding
 _GEOCODE_CACHE: Dict[str, Tuple[float, float, float]] = {}
@@ -474,6 +474,9 @@ def is_valid_channel(interaction: discord.Interaction) -> bool:
     
 @bot.event
 async def setup_hook():
+    global aio_session
+    # Create aiohttp session AFTER loop exists
+    aio_session = aiohttp.ClientSession()
     await mp.load()
     await mp.start_autosave(asyncio.get_event_loop())
     # load blackjack cog
@@ -484,20 +487,13 @@ async def setup_hook():
     else:
         await bot.tree.sync()
 
-# Graceful shutdown
-async def _cleanup():
-    logger.info("Shutting down: closing aiohttp session")
-    await aio_session.close()
-
-def run_bot():
-    try:
-        bot.run(DISCORD_TOKEN)
-    finally:
-        # synchronous cleanup not ideal — but ensure aiohttp closed
-        loop = asyncio.get_event_loop()
-        if not loop.is_closed():
-            loop.run_until_complete(_cleanup())
-
+@bot.event
+async def close():
+    global aio_session
+    if aio_session:
+        await aio_session.close()
+        aio_session = None
+    await super().close()
 
 if __name__ == "__main__":
-    run_bot()
+    bot.run(DISCORD_TOKEN)
