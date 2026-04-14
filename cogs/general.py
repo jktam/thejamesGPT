@@ -12,9 +12,13 @@ class GeneralCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="help")
+    @app_commands.command(name="help", description="Show the bot command guide")
     @app_commands.choices(visibility=VISIBILITY_CHOICES)
-    async def help_slash(self, interaction: discord.Interaction, visibility=None):
+    async def help_slash(
+        self,
+        interaction: discord.Interaction,
+        visibility: app_commands.Choice[str] | None = None,
+    ):
         ephemeral = is_ephemeral(visibility, True)
 
         embed = discord.Embed(title="James Bot Commands")
@@ -23,9 +27,14 @@ class GeneralCog(commands.Cog):
 
         await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
 
-    @app_commands.command(name="choose")
+    @app_commands.command(name="choose", description="Pick one option from a comma-separated list")
     @app_commands.choices(visibility=VISIBILITY_CHOICES)
-    async def choose_slash(self, interaction: discord.Interaction, choices: str, visibility=None):
+    async def choose_slash(
+        self,
+        interaction: discord.Interaction,
+        choices: str,
+        visibility: app_commands.Choice[str] | None = None,
+    ):
         options = build_choice_list(choices)
 
         if len(options) < 2:

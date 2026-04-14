@@ -2,21 +2,43 @@ name: Deploy Bot
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
+
+concurrency:
+  group: deploy-bot
+  cancel-in-progress: true
 
 jobs:
   deploy:
-    runs-on: self-hosted   # because your runner is on the same server
+    runs-on: self-hosted
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Add SSH key
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
-
-      - name: Deploy
+      - name: Deploy application
+        shell: bash
         run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.SERVER_USER }}@localhost "cd ${{ secrets.SERVER_PROJECT_PATH }} && git pull && sudo systemctl restart ${{ secrets.SERVER_SYSTEMD_BOT }}"
+          set -euo pipefail
+
+          cd "${{ secrets.SERVER_PROJECT_PATH }}"
+
+          git fetch origin main
+          git reset --hard origin/main
+
+          sudo apt update
+          sudo apt install -y python3.10-venv
+
+          if [ ! -d .venv ]; then
+            python3 -m venv .venv
+          fi
+
+          source .venv/bin/activate
+          python -m pip install --upgrade pip
+
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install discord.py python-dotenv aiohttp openai beautifulsoup4
+          fi
+
+          sudo systemctl daemon-reload
+          sudo systemctl restart "${{ secrets.SERVER_SYSTEMD_BOT }}"
+          sudo systemctl status "${{ secrets.SERVER_SYSTEMD_BOT }}" --no-pager --lines=25
