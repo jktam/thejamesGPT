@@ -17,6 +17,7 @@ REWRITE_TONE_CHOICES = [
     app_commands.Choice(name="direct", value="direct"),
     app_commands.Choice(name="shorter", value="shorter"),
     app_commands.Choice(name="linkedin", value="linkedin"),
+    app_commands.Choice(name="degen", value="degen"),
 ]
 
 EXPLAIN_LEVEL_CHOICES = [
@@ -26,10 +27,104 @@ EXPLAIN_LEVEL_CHOICES = [
 ]
 
 
+def build_rewrite_prompt(text: str, tone_value: str) -> str:
+    if tone_value == "linkedin":
+        return (
+            "Rewrite the following text as an exaggerated LinkedIn post. "
+            "Use corporate buzzwords, inspirational tone, dramatic framing, "
+            "short paragraphs, and self-important style. Keep it parody-like but readable. "
+            "Format the output cleanly for Discord readability.\n\n"
+            f"Original text:\n{text}"
+        )
+
+    if tone_value == "degen":
+        return (
+            "Rewrite the following text in a chaotic, unhinged, meme-heavy degenerate internet style. "
+            "Use lots of emojis, exaggerated reactions, slang, absurd phrasing, and dramatic energy. "
+            "Keep it non-explicit, ridiculous, and entertaining. "
+            "Format the output cleanly for Discord readability with line breaks and chaotic pacing.\n\n"
+            f"Original text:\n{text}"
+        )
+
+    if tone_value == "shorter":
+        return (
+            "Rewrite the following text to be shorter, clearer, and more concise while preserving meaning.\n\n"
+            f"Original text:\n{text}"
+        )
+
+    if tone_value in {"professional", "casual", "friendly", "direct"}:
+        return (
+            f"Rewrite the following text in a {tone_value} tone while preserving the original meaning.\n\n"
+            f"Original text:\n{text}"
+        )
+
+    return (
+        "Rewrite the following text in the requested tone while preserving the original meaning. "
+        f"Requested tone: {tone_value}\n\n"
+        f"Original text:\n{text}"
+    )
+
+
+class RewriteMessageModal(discord.ui.Modal, title="Rewrite Message"):
+    tone = discord.ui.TextInput(
+        label="Tone",
+        placeholder="professional, casual, friendly, direct, shorter, linkedin, degen",
+        required=True,
+        max_length=50,
+    )
+
+    def __init__(self, openai_service: OpenAIService, target_message: discord.Message, max_chunks: int) -> None:
+        super().__init__()
+        self.openai_service = openai_service
+        self.target_message = target_message
+        self.max_chunks = max_chunks
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        async def work() -> str:
+            tone_value = self.tone.value.strip().lower()
+            text = self.target_message.content or "(no text content)"
+            prompt = build_rewrite_prompt(text, tone_value)
+            return await self.openai_service.ask(prompt)
+
+        await run_interaction_task(
+            interaction,
+            task_name="Rewrite Message",
+            work=work,
+            ephemeral=True,
+            max_chunks=self.max_chunks,
+        )
+
+
 class AICog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.openai_service = OpenAIService(bot.settings)
+
+        self.rewrite_message_menu = app_commands.ContextMenu(
+            name="Rewrite Message",
+            callback=self.rewrite_message_context,
+        )
+
+    async def cog_load(self) -> None:
+        self.bot.tree.add_command(self.rewrite_message_menu)
+
+    async def cog_unload(self) -> None:
+        self.bot.tree.remove_command(
+            self.rewrite_message_menu.name,
+            type=self.rewrite_message_menu.type,
+        )
+
+    async def rewrite_message_context(
+        self,
+        interaction: discord.Interaction,
+        message: discord.Message,
+    ) -> None:
+        modal = RewriteMessageModal(
+            openai_service=self.openai_service,
+            target_message=message,
+            max_chunks=self.bot.settings.max_text_chunks,
+        )
+        await interaction.response.send_modal(modal)
 
     @app_commands.command(name="ask", description="Ask the bot a question")
     @app_commands.choices(visibility=VISIBILITY_CHOICES)
@@ -67,27 +162,7 @@ class AICog(commands.Cog):
         ephemeral = is_ephemeral(visibility, True)
 
         async def work():
-            tone_value = tone.value
-
-            if tone_value == "linkedin":
-                prompt = (
-                    "Rewrite the following text in an exaggerated LinkedIn post style. "
-                    "Make it sound self-important, inspirational, buzzword-heavy, and slightly absurd, "
-                    "like a parody of stereotypical LinkedIn thought-leadership posts. "
-                    "Use short paragraphs when helpful, but keep it readable.\n\n"
-                    f"Original text:\n{text}"
-                )
-            elif tone_value == "shorter":
-                prompt = (
-                    "Rewrite the following text to be shorter, clearer, and tighter while preserving meaning.\n\n"
-                    f"Original text:\n{text}"
-                )
-            else:
-                prompt = (
-                    f"Rewrite the following text in a {tone_value} tone while preserving the original intent.\n\n"
-                    f"Original text:\n{text}"
-                )
-
+            prompt = build_rewrite_prompt(text, tone.value)
             return await self.openai_service.ask(prompt)
 
         await run_interaction_task(
@@ -144,6 +219,12 @@ class AICog(commands.Cog):
         )
 
     @app_commands.command(name="translate", description="Translate text into another language")
+    @app_commands.describe(
+        text="Text to translate",
+        target_language="Target language code, e.g. es, fr, ja, zh-CN",
+        source_language="Optional source language code, e.g. en",
+        visibility="Whether the result should be public or private",
+    )
     @app_commands.choices(visibility=VISIBILITY_CHOICES)
     async def translate_slash(
         self,

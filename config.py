@@ -20,6 +20,7 @@ class Settings:
     http_timeout_seconds: int
     openai_timeout_seconds: int
     max_text_chunks: int
+    image_timeout_seconds: int
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -44,6 +45,7 @@ class Settings:
             http_timeout_seconds=int(os.getenv("HTTP_TIMEOUT_SECONDS", "30")),
             openai_timeout_seconds=int(os.getenv("OPENAI_TIMEOUT_SECONDS", "45")),
             max_text_chunks=int(os.getenv("MAX_TEXT_CHUNKS", "6")),
+            image_timeout_seconds=int(os.getenv("OPENAI_IMAGE_TIMEOUT_SECONDS", "90")),
         )
 
 

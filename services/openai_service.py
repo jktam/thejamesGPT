@@ -50,12 +50,7 @@ class OpenAIService:
             timeout=self.settings.openai_timeout_seconds,
         )
 
-    async def generate_image(
-        self,
-        prompt: str,
-        *,
-        model: str | None = None,
-    ) -> str:
+    async def generate_image(self, prompt: str, *, model: str | None = None) -> str:
         selected_model = model or self.settings.default_image_model
         loop = asyncio.get_running_loop()
 
@@ -67,10 +62,10 @@ class OpenAIService:
             )
             image_url = response.data[0].url
             if not image_url:
-                raise RuntimeError("Image API returned no URL")
+                raise RuntimeError(f"Image API returned no URL for model {selected_model}")
             return image_url
 
         return await asyncio.wait_for(
             loop.run_in_executor(_executor, do_call),
-            timeout=self.settings.openai_timeout_seconds,
+            timeout=self.settings.image_timeout_seconds,
         )
