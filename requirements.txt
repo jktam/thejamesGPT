@@ -1,6 +1,6 @@
 aiohttp
 beautifulsoup4
 discord.py
-openai
+openai>=1.0.0
 python-dotenv
 requests

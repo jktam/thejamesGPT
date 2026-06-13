@@ -1,16 +1,13 @@
 from __future__ import annotations
 
-from collections import defaultdict, deque
-from dataclasses import dataclass
 from io import BytesIO
-from time import monotonic
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-from services.google_translate import translate_text
 from services.openai_service import OpenAIService
+from services.google_translate import translate_text
 from utils.presentation import run_interaction_task
 from utils.visibility import VISIBILITY_CHOICES, is_ephemeral
 
@@ -30,16 +27,6 @@ EXPLAIN_LEVEL_CHOICES = [
     app_commands.Choice(name="normal", value="normal"),
     app_commands.Choice(name="technical", value="technical"),
 ]
-
-ASK_MEMORY_LIMIT = 8
-ASK_MEMORY_TTL_SECONDS = 60 * 60
-
-
-@dataclass(slots=True)
-class MemoryTurn:
-    role: str
-    content: str
-    created_at: float
 
 
 def build_rewrite_prompt(text: str, tone_value: str) -> str:
@@ -80,24 +67,15 @@ def build_rewrite_prompt(text: str, tone_value: str) -> str:
     )
 
 
-def build_discord_ask_prompt(user_prompt: str, memory: list[MemoryTurn]) -> str:
-    context_bits: list[str] = []
-    for turn in memory:
-        speaker = "User" if turn.role == "user" else "Assistant"
-        context_bits.append(f"{speaker}: {turn.content}")
-
-    context = "\n".join(context_bits).strip()
-
+def build_discord_ask_prompt(user_prompt: str) -> str:
     return (
         "You are a Discord assistant helping a friend group in an active server.\n"
         "Tone: friendly, useful, and concise.\n"
-        "Behavior:\n"
-        "- Prefer practical answers over generic ChatGPT-style essays.\n"
-        "- If the question is ambiguous, ask at most one short clarifying question.\n"
-        "- If the user seems to want a group-friendly answer, include a quick suggestion people can react to.\n"
+        "Rules:\n"
+        "- Give a direct, practical answer. Never ask follow-up or clarifying questions — "
+        "just answer based on your best interpretation of what the user wants.\n"
         "- Keep the response readable in Discord.\n\n"
-        f"Recent conversation context:\n{context or '(none)'}\n\n"
-        f"New user message:\n{user_prompt}"
+        f"User message:\n{user_prompt}"
     )
 
 
@@ -135,7 +113,6 @@ class AICog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.openai_service = OpenAIService(bot.settings)
-        self.ask_memory: dict[int, deque[MemoryTurn]] = defaultdict(lambda: deque(maxlen=ASK_MEMORY_LIMIT))
 
         self.rewrite_message_menu = app_commands.ContextMenu(
             name="Rewrite Message",
@@ -149,18 +126,6 @@ class AICog(commands.Cog):
         self.bot.tree.remove_command(
             self.rewrite_message_menu.name,
             type=self.rewrite_message_menu.type,
-        )
-
-    def _get_channel_memory(self, channel_id: int) -> list[MemoryTurn]:
-        now = monotonic()
-        turns = self.ask_memory[channel_id]
-        while turns and now - turns[0].created_at > ASK_MEMORY_TTL_SECONDS:
-            turns.popleft()
-        return list(turns)
-
-    def _append_memory(self, channel_id: int, role: str, content: str) -> None:
-        self.ask_memory[channel_id].append(
-            MemoryTurn(role=role, content=content[:1500], created_at=monotonic())
         )
 
     async def rewrite_message_context(
@@ -185,19 +150,12 @@ class AICog(commands.Cog):
     ):
         ephemeral = is_ephemeral(visibility, True)
 
-        channel_id = interaction.channel_id
-
-        async def work():
-            memory = self._get_channel_memory(channel_id) if channel_id is not None else []
-            structured_prompt = build_discord_ask_prompt(prompt, memory)
-            response = await self.openai_service.ask(
+        async def work() -> str:
+            structured_prompt = build_discord_ask_prompt(prompt)
+            return await self.openai_service.ask(
                 structured_prompt,
                 system_prompt="You help a Discord friend group.",
             )
-            if channel_id is not None:
-                self._append_memory(channel_id, "user", prompt)
-                self._append_memory(channel_id, "assistant", response)
-            return response
 
         await run_interaction_task(
             interaction,
@@ -221,7 +179,7 @@ class AICog(commands.Cog):
     ):
         ephemeral = is_ephemeral(visibility, True)
 
-        async def work():
+        async def work() -> str:
             prompt = build_rewrite_prompt(text, tone.value)
             return await self.openai_service.ask(prompt)
 
@@ -248,7 +206,7 @@ class AICog(commands.Cog):
         ephemeral = is_ephemeral(visibility, True)
         selected_level = level.value if level else "normal"
 
-        async def work():
+        async def work() -> str:
             if selected_level == "simple":
                 prompt = (
                     "Explain the following text in simple language for a non-expert. "
@@ -267,7 +225,6 @@ class AICog(commands.Cog):
                     "Preserve the meaning but make it easier to understand.\n\n"
                     f"Text:\n{text}"
                 )
-
             return await self.openai_service.ask(prompt)
 
         await run_interaction_task(
@@ -296,7 +253,7 @@ class AICog(commands.Cog):
     ):
         ephemeral = is_ephemeral(visibility, True)
 
-        async def work():
+        async def work() -> str:
             return await translate_text(
                 self.bot,
                 text=text,

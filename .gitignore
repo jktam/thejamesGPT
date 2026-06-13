@@ -5,3 +5,4 @@ __pycache__
 noembed-bot.py
 money_pool.json
 .DS_Store
+data/quotes.json
