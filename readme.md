@@ -1,92 +1,39 @@
 # The James Bot
 
-A Discord bot built around **slash commands with optional visibility control**.
+A Discord bot with a small set of useful slash commands for group chats, food lookup, and AI helpers.
 
-## Interaction Model
+## Quick Use
 
-All features are exposed via `/commands`.
+Most commands support `visibility: public` or `visibility: private`.
 
-Each command may optionally specify:
-- `visibility: public`
-- `visibility: private`
-
-### Default behavior
-
-| Command Type | Default Visibility |
-|------------|------------------|
-| Help / AI | Private |
-| Utility / Social | Public |
-
----
+- AI commands default to private
+- Utility and social commands default to public
+- `/ask` keeps short-lived memory per channel for follow-ups
 
 ## Commands
 
-### `/help`
-Show command guide.
+### General
+- `/help` - Show the command guide
+- `/choose` - Pick one option from a comma-separated list
 
-Default: **private**
+### AI
+- `/ask` - Ask a question with Discord-friendly answers
+- `/rewrite` - Rewrite text in a chosen tone
+- `/explain` - Explain text more clearly
+- `/translate` - Translate text into another language
+- `/img` - Generate an image from a prompt
+- `Rewrite Message` - Right-click a message to rewrite it
 
----
+### Food
+- `/eats` - Find nearby restaurants
+- `/addy` - Look up a restaurant address
 
-### `/choose`
-Pick one option from a comma-separated list.
+## Notes
 
-Example:
-/choose choices:pizza, sushi, burgers
-
-
----
-
-### `/ask`
-Ask the bot a question (OpenAI).
-
-Supports **reply context**:
-- Reply to a message, then run `/ask`
-- The bot will use that message as context
-
-Example:
-/ask prompt:explain this better
-
-
----
-
-### `/img`
-Generate an image from a prompt.
-
-Example:
-/img prompt:cyberpunk city at night
-
-
-
----
-
-### `/eats`
-Find restaurants near a location.
-
-Example:
-/eats city:Fremont radius:5 category:sushi
-
-
----
-
-### `/addy`
-Find restaurant address + Google Maps link.
-
-Example:
-/addy restaurant:In-N-Out city:Fremont
-
-
----
-
-## Features
-
-- OpenAI text + image generation
-- Google Places integration
-- Automatic RedNote/Xiaohongshu link previews
-- Visibility-aware responses (public/private)
-- Reply-aware AI commands
-
----
+- `/ask` is tuned for short follow-ups in the same channel
+- `/img` can fall back to an attached image if the API does not return a URL
+- Slash commands are synced on startup
+- The bot uses a shared `aiohttp` session
 
 ## Environment Variables
 
@@ -100,11 +47,3 @@ Example:
 - `OPENAI_CHAT_MODEL`
 - `OPENAI_IMAGE_MODEL`
 - `BOT_STATUS_TEXT`
-
----
-
-## Notes
-
-- Slash commands are synced on startup
-- Bot uses a shared `aiohttp` session
-- Clean shutdown implemented via subclassed bot

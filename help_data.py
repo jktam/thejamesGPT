@@ -4,7 +4,7 @@ HELP_SECTIONS = {
         "/choose — Pick one option from a comma-separated list.",
     ],
     "AI": [
-        "/ask — Ask a question. Defaults to private.",
+        "/ask — Ask a question. Keeps short channel memory for follow-ups.",
         "/rewrite — Rewrite text in a chosen tone.",
         "/explain — Explain text more clearly.",
         "/img — Generate an image from a prompt.",

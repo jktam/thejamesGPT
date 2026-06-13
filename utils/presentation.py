@@ -12,6 +12,13 @@ async def run_interaction_task(interaction, *, task_name, work, ephemeral: bool,
     try:
         result = await work()
 
+        if isinstance(result, tuple):
+            embed = next((item for item in result if isinstance(item, discord.Embed)), None)
+            files = [item for item in result if isinstance(item, discord.File)]
+            if embed is not None or files:
+                await interaction.followup.send(embed=embed, files=files or None, ephemeral=ephemeral)
+                return
+
         if isinstance(result, discord.Embed):
             await interaction.followup.send(embed=result, ephemeral=ephemeral)
             return

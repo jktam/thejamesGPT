@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from openai import OpenAI
+import openai
 
 _executor = ThreadPoolExecutor(max_workers=4)
 
@@ -13,7 +14,7 @@ _executor = ThreadPoolExecutor(max_workers=4)
 class OpenAIService:
     def __init__(self, settings) -> None:
         self.settings = settings
-        self.client = OpenAI(api_key=settings.openai_api_key)
+        openai.api_key = settings.openai_api_key
 
     def _build_instructions(self, system_prompt: str) -> str:
         # You can change this timezone if you want the bot anchored elsewhere.
@@ -25,6 +26,21 @@ class OpenAIService:
             f"If the user asks about current, upcoming, recent, latest, or time-sensitive real-world information, "
             f"do not guess or invent facts. State uncertainty when needed."
         )
+
+    def _extract_chat_text(self, response) -> str:
+        choices = getattr(response, "choices", None) or []
+        if not choices:
+            return ""
+
+        choice = choices[0]
+        message = getattr(choice, "message", None)
+        if message is not None:
+            content = getattr(message, "content", None)
+            if content:
+                return content
+
+        text = getattr(choice, "text", None)
+        return text or ""
 
     async def ask(
         self,
@@ -38,32 +54,62 @@ class OpenAIService:
         instructions = self._build_instructions(system_prompt)
 
         def do_call() -> str:
-            response = self.client.responses.create(
+            response = openai.ChatCompletion.create(
                 model=selected_model,
-                instructions=instructions,
-                input=prompt,
+                messages=[
+                    {"role": "system", "content": instructions},
+                    {"role": "user", "content": prompt},
+                ],
             )
-            return response.output_text or ""
+            return self._extract_chat_text(response)
 
         return await asyncio.wait_for(
             loop.run_in_executor(_executor, do_call),
             timeout=self.settings.openai_timeout_seconds,
         )
 
-    async def generate_image(self, prompt: str, *, model: str | None = None) -> str:
+    async def generate_image(self, prompt: str, *, model: str | None = None) -> dict[str, str | bytes]:
         selected_model = model or self.settings.default_image_model
         loop = asyncio.get_running_loop()
 
-        def do_call() -> str:
-            response = self.client.images.generate(
+        def do_call() -> dict[str, str | bytes]:
+            response = openai.Image.create(
                 model=selected_model,
                 prompt=prompt,
                 size="1024x1024",
+                response_format="b64_json",
             )
-            image_url = response.data[0].url
-            if not image_url:
-                raise RuntimeError(f"Image API returned no URL for model {selected_model}")
-            return image_url
+            data = (response.get("data") or []) if isinstance(response, dict) else getattr(response, "data", [])
+            if not data:
+                raise RuntimeError(f"Image API returned no image data for model {selected_model}")
+
+            first = data[0]
+            if isinstance(first, dict):
+                image_url = first.get("url")
+                if image_url:
+                    return {"kind": "url", "value": image_url}
+
+                b64_json = first.get("b64_json")
+                if b64_json:
+                    return {
+                        "kind": "bytes",
+                        "value": base64.b64decode(b64_json),
+                        "mime_type": first.get("mime_type", "image/png"),
+                    }
+            else:
+                image_url = getattr(first, "url", None)
+                if image_url:
+                    return {"kind": "url", "value": image_url}
+
+                b64_json = getattr(first, "b64_json", None)
+                if b64_json:
+                    return {
+                        "kind": "bytes",
+                        "value": base64.b64decode(b64_json),
+                        "mime_type": getattr(first, "mime_type", "image/png"),
+                    }
+
+            raise RuntimeError(f"Image API returned no URL or image payload for model {selected_model}")
 
         return await asyncio.wait_for(
             loop.run_in_executor(_executor, do_call),
