@@ -45,7 +45,6 @@ class OpenAIService:
             model=selected_model,
             prompt=prompt,
             size="1024x1024",
-            response_format="b64_json",
             timeout=self.settings.image_timeout_seconds,
         )
         item = response.data[0]
