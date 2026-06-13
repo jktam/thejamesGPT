@@ -8,7 +8,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from services.openai_service import OpenAIService
+from services.openai_service import OpenAIService, format_usage_footnote
 from utils.presentation import run_interaction_task
 
 
@@ -127,10 +127,11 @@ class FunCog(commands.Cog):
 
         async def work() -> str:
             prompt = _build_roast_prompt(member.display_name, selected_tone)
-            return await self.openai_service.ask(
+            result, usage = await self.openai_service.ask(
                 prompt,
                 system_prompt="You write playful, good-natured roasts for a Discord friend group.",
             )
+            return result + format_usage_footnote(usage)
 
         await run_interaction_task(
             interaction,

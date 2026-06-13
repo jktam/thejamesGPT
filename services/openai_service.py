@@ -27,7 +27,7 @@ class OpenAIService:
         *,
         system_prompt: str = "You are a helpful assistant.",
         model: str | None = None,
-    ) -> str:
+    ) -> tuple[str, object | None]:
         selected_model = model or self.settings.default_chat_model
         response = await self._client.chat.completions.create(
             model=selected_model,
@@ -37,7 +37,7 @@ class OpenAIService:
             ],
             timeout=self.settings.openai_timeout_seconds,
         )
-        return response.choices[0].message.content or ""
+        return response.choices[0].message.content or "", response.usage
 
     async def generate_image(self, prompt: str, *, model: str | None = None) -> dict[str, str | bytes]:
         selected_model = model or self.settings.default_image_model
@@ -53,3 +53,9 @@ class OpenAIService:
         if item.url:
             return {"kind": "url", "value": item.url}
         raise RuntimeError(f"Image API returned no image data for model {selected_model}")
+
+
+def format_usage_footnote(usage) -> str:
+    if usage is None:
+        return ""
+    return f"\n-# {usage.prompt_tokens} in · {usage.completion_tokens} out tokens"

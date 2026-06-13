@@ -1,5 +1,6 @@
 .env
-__pycache__
+**/__pycache__/
+.pytest_cache/
 .python-version
 *.old
 noembed-bot.py

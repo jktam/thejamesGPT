@@ -6,7 +6,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from services.openai_service import OpenAIService
+from services.openai_service import OpenAIService, format_usage_footnote
 from services.google_translate import translate_text
 from utils.presentation import run_interaction_task
 from utils.visibility import VISIBILITY_CHOICES, is_ephemeral
@@ -98,7 +98,8 @@ class RewriteMessageModal(discord.ui.Modal, title="Rewrite Message"):
             tone_value = self.tone.value.strip().lower()
             text = self.target_message.content or "(no text content)"
             prompt = build_rewrite_prompt(text, tone_value)
-            return await self.openai_service.ask(prompt)
+            result, usage = await self.openai_service.ask(prompt)
+            return result + format_usage_footnote(usage)
 
         await run_interaction_task(
             interaction,
@@ -152,10 +153,11 @@ class AICog(commands.Cog):
 
         async def work() -> str:
             structured_prompt = build_discord_ask_prompt(prompt)
-            return await self.openai_service.ask(
+            result, usage = await self.openai_service.ask(
                 structured_prompt,
                 system_prompt="You help a Discord friend group.",
             )
+            return result + format_usage_footnote(usage)
 
         await run_interaction_task(
             interaction,
@@ -181,7 +183,8 @@ class AICog(commands.Cog):
 
         async def work() -> str:
             prompt = build_rewrite_prompt(text, tone.value)
-            return await self.openai_service.ask(prompt)
+            result, usage = await self.openai_service.ask(prompt)
+            return result + format_usage_footnote(usage)
 
         await run_interaction_task(
             interaction,
@@ -225,7 +228,8 @@ class AICog(commands.Cog):
                     "Preserve the meaning but make it easier to understand.\n\n"
                     f"Text:\n{text}"
                 )
-            return await self.openai_service.ask(prompt)
+            result, usage = await self.openai_service.ask(prompt)
+            return result + format_usage_footnote(usage)
 
         await run_interaction_task(
             interaction,

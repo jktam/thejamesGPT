@@ -22,7 +22,8 @@ def _image_response(url=None, b64_json=None):
 
 def _chat_response(content: str):
     return SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+        choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
+        usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15),
     )
 
 
@@ -49,8 +50,10 @@ class OpenAIServiceTests(unittest.TestCase):
     def test_ask_returns_message_content(self):
         service = OpenAIService(DummySettings())
         with patch.object(service._client.chat.completions, "create", AsyncMock(return_value=_chat_response("hello there"))):
-            result = asyncio.run(service.ask("hi"))
-        self.assertEqual(result, "hello there")
+            text, usage = asyncio.run(service.ask("hi"))
+        self.assertEqual(text, "hello there")
+        self.assertEqual(usage.prompt_tokens, 10)
+        self.assertEqual(usage.completion_tokens, 5)
 
 
 if __name__ == "__main__":
