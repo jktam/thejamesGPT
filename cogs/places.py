@@ -11,12 +11,27 @@ from services.google_places import (
 from utils.presentation import run_interaction_task
 from utils.visibility import VISIBILITY_CHOICES, is_ephemeral
 
+_MAX_CITY_LEN = 100
+_MAX_CATEGORY_LEN = 50
+_MAX_RESTAURANT_LEN = 100
+
 
 class PlacesCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
+    async def cog_app_command_error(
+        self, interaction: discord.Interaction, error: app_commands.AppCommandError
+    ) -> None:
+        if isinstance(error, app_commands.CommandOnCooldown):
+            await interaction.response.send_message(
+                f"Slow down! Try again in {error.retry_after:.0f}s.", ephemeral=True
+            )
+        else:
+            raise error
+
     @app_commands.command(name="eats", description="Find nearby restaurants")
+    @app_commands.checks.cooldown(1, 20.0)
     @app_commands.choices(visibility=VISIBILITY_CHOICES)
     async def eats_slash(
         self,
@@ -26,6 +41,13 @@ class PlacesCog(commands.Cog):
         category: str | None = None,
         visibility: app_commands.Choice[str] | None = None,
     ):
+        if len(city) > _MAX_CITY_LEN:
+            await interaction.response.send_message("City name is too long.", ephemeral=True)
+            return
+        if category and len(category) > _MAX_CATEGORY_LEN:
+            await interaction.response.send_message("Category is too long.", ephemeral=True)
+            return
+
         ephemeral = is_ephemeral(visibility, False)
 
         async def work():
@@ -46,6 +68,7 @@ class PlacesCog(commands.Cog):
         )
 
     @app_commands.command(name="addy", description="Look up a restaurant address")
+    @app_commands.checks.cooldown(1, 10.0)
     @app_commands.choices(visibility=VISIBILITY_CHOICES)
     async def addy_slash(
         self,
@@ -54,6 +77,13 @@ class PlacesCog(commands.Cog):
         city: str,
         visibility: app_commands.Choice[str] | None = None,
     ):
+        if len(restaurant) > _MAX_RESTAURANT_LEN:
+            await interaction.response.send_message("Restaurant name is too long.", ephemeral=True)
+            return
+        if len(city) > _MAX_CITY_LEN:
+            await interaction.response.send_message("City name is too long.", ephemeral=True)
+            return
+
         ephemeral = is_ephemeral(visibility, False)
 
         async def work():

@@ -27,6 +27,7 @@ class OpenAIService:
         *,
         system_prompt: str = "You are a helpful assistant.",
         model: str | None = None,
+        max_tokens: int = 1024,
     ) -> tuple[str, object | None]:
         selected_model = model or self.settings.default_chat_model
         response = await self._client.chat.completions.create(
@@ -35,6 +36,7 @@ class OpenAIService:
                 {"role": "system", "content": self._build_system(system_prompt)},
                 {"role": "user", "content": prompt},
             ],
+            max_tokens=max_tokens,
             timeout=self.settings.openai_timeout_seconds,
         )
         return response.choices[0].message.content or "", response.usage

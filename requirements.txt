@@ -1,6 +1,6 @@
-aiohttp
-beautifulsoup4
-discord.py
-openai>=1.0.0
-python-dotenv
-requests
+aiohttp==3.8.4
+beautifulsoup4==4.12.3
+discord.py==2.2.2
+openai>=1.0.0,<3.0.0
+python-dotenv==1.0.0
+requests==2.28.2

@@ -26,6 +26,6 @@ async def run_interaction_task(interaction, *, task_name, work, ephemeral: bool,
         for chunk in chunk_text(str(result), max_chunks=max_chunks):
             await interaction.followup.send(chunk, ephemeral=ephemeral)
 
-    except Exception as exc:
+    except Exception:
         logger.exception("%s failed", task_name)
-        await interaction.followup.send(f"⚠️ {task_name} failed: {exc}", ephemeral=True)
+        await interaction.followup.send(f"⚠️ {task_name} failed. Please try again.", ephemeral=True)
