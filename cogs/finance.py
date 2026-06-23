@@ -16,47 +16,18 @@ _CARD_CATEGORIES_PATH = Path(__file__).parent.parent / "data" / "card_categories
 
 _QUARTER_MONTHS = {1: "Jan–Mar", 2: "Apr–Jun", 3: "Jul–Sep", 4: "Oct–Dec"}
 
-_MARKET_TICKERS = {
-    "S&P 500": "^GSPC",
-    "Nasdaq": "^IXIC",
-    "Bitcoin": "BTC-USD",
-    "Gold": "GC=F",
-    "10Y UST": "^TNX",
-}
-
 _DIGEST_TIME = datetime.time(hour=14, minute=0, tzinfo=datetime.timezone.utc)
 
-
-def _fetch_market_sync() -> dict:
-    import yfinance as yf
-
-    result = {}
-    for name, symbol in _MARKET_TICKERS.items():
-        try:
-            hist = yf.Ticker(symbol).history(period="5d")
-            if hist.empty:
-                continue
-            close = float(hist["Close"].iloc[-1])
-            open_ = float(hist["Open"].iloc[0])
-            pct = (close - open_) / open_ * 100
-
-            if symbol == "^TNX":
-                price_str = f"{close:.2f}%"
-            elif close >= 10_000:
-                price_str = f"{close:,.0f}"
-            elif close >= 100:
-                price_str = f"{close:,.2f}"
-            else:
-                price_str = f"{close:.2f}"
-
-            result[name] = {"price": price_str, "pct": pct}
-        except Exception:
-            logger.exception("Failed to fetch market data for %s", symbol)
-    return result
-
-
-_REDDIT_URL = "https://www.reddit.com/r/investing/top.json"
+_FINNHUB_CANDLE_URL = "https://finnhub.io/api/v1/stock/candle"
+_COINGECKO_URL = "https://api.coingecko.com/api/v3/coins/markets"
+_REDDIT_URL = "https://old.reddit.com/r/investing/top.json"
 _REDDIT_HEADERS = {"User-Agent": "thejamesgpt-finance-bot/1.0"}
+
+_STOCK_SYMBOLS = {
+    "S&P 500": "SPY",
+    "Nasdaq": "QQQ",
+    "Gold": "GLD",
+}
 
 
 class FinanceCog(commands.Cog):
@@ -105,26 +76,20 @@ class FinanceCog(commands.Cog):
     async def _build_embed(self) -> discord.Embed:
         settings = self.bot.settings
 
-        market_task = asyncio.to_thread(_fetch_market_sync)
-
+        market_task = self._fetch_market() if settings.finnhub_api_key else asyncio.sleep(0)
         reddit_task = self._fetch_reddit()
-
-        econ_task = (
-            self._fetch_econ_calendar()
-            if settings.finnhub_api_key
-            else asyncio.sleep(0)
-        )
+        econ_task = self._fetch_econ_calendar() if settings.finnhub_api_key else asyncio.sleep(0)
 
         market, reddit_posts, econ_events = await asyncio.gather(
             market_task, reddit_task, econ_task, return_exceptions=True
         )
 
         if isinstance(market, Exception):
-            logger.error("Market fetch failed: %s", market, exc_info=market)
+            logger.error("Market fetch failed", exc_info=market)
         if isinstance(reddit_posts, Exception):
-            logger.error("Reddit fetch failed: %s", reddit_posts, exc_info=reddit_posts)
+            logger.error("Reddit fetch failed", exc_info=reddit_posts)
         if isinstance(econ_events, Exception):
-            logger.error("Econ calendar fetch failed: %s", econ_events, exc_info=econ_events)
+            logger.error("Econ calendar fetch failed", exc_info=econ_events)
 
         now = datetime.datetime.now(datetime.timezone.utc)
         embed = discord.Embed(
@@ -163,18 +128,84 @@ class FinanceCog(commands.Cog):
         if card_text:
             embed.add_field(name="💳 Quarterly Bonus Categories", value=card_text, inline=False)
 
-        sources = ["Yahoo Finance", "Reddit"]
-        if isinstance(econ_events, list) and econ_events:
-            sources.append("Finnhub")
+        sources = ["Finnhub", "CoinGecko", "Reddit"]
         embed.set_footer(text="Data: " + " · ".join(sources))
         return embed
+
+    # ------------------------------------------------------------------ market
+
+    async def _fetch_market(self) -> dict:
+        now = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+        two_weeks_ago = now - 14 * 86400
+
+        stock_tasks = {
+            name: self._finnhub_weekly_candle(symbol, two_weeks_ago, now)
+            for name, symbol in _STOCK_SYMBOLS.items()
+        }
+        btc_task = self._coingecko_btc()
+
+        results_list = await asyncio.gather(
+            *stock_tasks.values(), btc_task, return_exceptions=True
+        )
+
+        result = {}
+        for name, data in zip(stock_tasks.keys(), results_list):
+            if isinstance(data, dict):
+                result[name] = data
+            else:
+                logger.error("Failed to fetch %s: %s", name, data)
+
+        btc = results_list[-1]
+        if isinstance(btc, dict):
+            result["Bitcoin"] = btc
+        else:
+            logger.error("Failed to fetch BTC: %s", btc)
+
+        return result
+
+    async def _finnhub_weekly_candle(self, symbol: str, from_ts: int, to_ts: int) -> dict:
+        params = {
+            "symbol": symbol,
+            "resolution": "W",
+            "from": from_ts,
+            "to": to_ts,
+            "token": self.bot.settings.finnhub_api_key,
+        }
+        async with self.bot.http_session.get(_FINNHUB_CANDLE_URL, params=params) as resp:
+            data = await resp.json()
+
+        closes = data.get("c") or []
+        if len(closes) < 2:
+            raise ValueError(f"Not enough candle data for {symbol}: {data}")
+
+        close = closes[-1]
+        prev = closes[-2]
+        pct = (close - prev) / prev * 100
+        price_str = f"{close:,.2f}" if close < 10_000 else f"{close:,.0f}"
+        return {"price": price_str, "pct": pct}
+
+    async def _coingecko_btc(self) -> dict:
+        params = {
+            "vs_currency": "usd",
+            "ids": "bitcoin",
+            "price_change_percentage": "7d",
+        }
+        async with self.bot.http_session.get(_COINGECKO_URL, params=params) as resp:
+            data = await resp.json()
+
+        coin = data[0]
+        price = coin["current_price"]
+        pct = coin.get("price_change_percentage_7d_in_currency") or 0.0
+        return {"price": f"{price:,.0f}", "pct": pct}
+
+    # ------------------------------------------------------------------ reddit
 
     async def _fetch_reddit(self) -> list[dict]:
         params = {"t": "week", "limit": "5"}
         async with self.bot.http_session.get(
             _REDDIT_URL, params=params, headers=_REDDIT_HEADERS
         ) as resp:
-            data = await resp.json()
+            data = await resp.json(content_type=None)
 
         posts = []
         for child in data.get("data", {}).get("children", []):
@@ -186,16 +217,19 @@ class FinanceCog(commands.Cog):
             })
         return posts
 
+    # ------------------------------------------------------------------ econ
+
     async def _fetch_econ_calendar(self) -> list[str]:
         today = datetime.date.today()
         to_date = today + datetime.timedelta(days=7)
-        url = "https://finnhub.io/api/v1/calendar/economic"
         params = {
             "from": today.isoformat(),
             "to": to_date.isoformat(),
             "token": self.bot.settings.finnhub_api_key,
         }
-        async with self.bot.http_session.get(url, params=params) as resp:
+        async with self.bot.http_session.get(
+            "https://finnhub.io/api/v1/calendar/economic", params=params
+        ) as resp:
             data = await resp.json()
 
         events = data.get("economicCalendar", [])
@@ -210,6 +244,8 @@ class FinanceCog(commands.Cog):
             name = e.get("event", "Unknown event")
             result.append(f"{date_str} — {name}")
         return result
+
+    # ------------------------------------------------------------------ cards
 
     def _card_section(self) -> str | None:
         today = datetime.date.today()
