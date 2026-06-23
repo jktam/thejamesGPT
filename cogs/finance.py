@@ -119,6 +119,13 @@ class FinanceCog(commands.Cog):
             market_task, reddit_task, econ_task, return_exceptions=True
         )
 
+        if isinstance(market, Exception):
+            logger.error("Market fetch failed: %s", market, exc_info=market)
+        if isinstance(reddit_posts, Exception):
+            logger.error("Reddit fetch failed: %s", reddit_posts, exc_info=reddit_posts)
+        if isinstance(econ_events, Exception):
+            logger.error("Econ calendar fetch failed: %s", econ_events, exc_info=econ_events)
+
         now = datetime.datetime.now(datetime.timezone.utc)
         embed = discord.Embed(
             title="📊 Weekly Finance Digest",
