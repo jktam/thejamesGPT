@@ -23,8 +23,7 @@ class Settings:
     image_timeout_seconds: int
     finance_channel_id: int | None
     finnhub_api_key: str | None
-    reddit_client_id: str | None
-    reddit_client_secret: str | None
+    alpha_vantage_api_key: str | None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -53,8 +52,7 @@ class Settings:
             image_timeout_seconds=int(os.getenv("OPENAI_IMAGE_TIMEOUT_SECONDS", "90")),
             finance_channel_id=int(finance_channel_id_raw) if finance_channel_id_raw else None,
             finnhub_api_key=os.getenv("FINNHUB_API_KEY"),
-            reddit_client_id=os.getenv("REDDIT_CLIENT_ID"),
-            reddit_client_secret=os.getenv("REDDIT_CLIENT_SECRET"),
+            alpha_vantage_api_key=os.getenv("ALPHA_VANTAGE_API_KEY"),
         )
 
 
