@@ -21,7 +21,7 @@ _DIGEST_TIME = datetime.time(hour=14, minute=0, tzinfo=datetime.timezone.utc)
 
 _AV_URL = "https://www.alphavantage.co/query"
 _COINGECKO_URL = "https://api.coingecko.com/api/v3/coins/markets"
-_REUTERS_RSS_URL = "https://feeds.reuters.com/reuters/businessNews"
+_NEWS_RSS_URL = "https://www.cnbc.com/id/10000664/device/rss/rss.html"
 
 _STOCK_SYMBOLS = {
     "S&P 500": "SPY",
@@ -125,27 +125,27 @@ class FinanceCog(commands.Cog):
         if card_text:
             embed.add_field(name="💳 Quarterly Bonus Categories", value=card_text, inline=False)
 
-        sources = ["Alpha Vantage", "CoinGecko", "Reuters", "Finnhub"]
+        sources = ["Alpha Vantage", "CoinGecko", "CNBC", "Finnhub"]
         embed.set_footer(text="Data: " + " · ".join(sources))
         return embed
 
     # ------------------------------------------------------------------ market
 
     async def _fetch_market(self) -> dict:
-        stock_tasks = {
-            name: self._av_weekly(symbol)
-            for name, symbol in _STOCK_SYMBOLS.items()
-        }
-        all_tasks = {**stock_tasks, "Bitcoin": self._coingecko_btc()}
-
-        results = await asyncio.gather(*all_tasks.values(), return_exceptions=True)
-
         result = {}
-        for name, data in zip(all_tasks.keys(), results):
-            if isinstance(data, dict):
-                result[name] = data
-            else:
-                logger.error("Failed to fetch %s: %s", name, data)
+
+        # Sequential calls to stay within AV's 5 req/min rate limit
+        for name, symbol in _STOCK_SYMBOLS.items():
+            try:
+                result[name] = await self._av_weekly(symbol)
+            except Exception as e:
+                logger.error("Failed to fetch %s: %s", name, e)
+
+        try:
+            result["Bitcoin"] = await self._coingecko_btc()
+        except Exception as e:
+            logger.error("Failed to fetch Bitcoin: %s", e)
+
         return result
 
     async def _av_weekly(self, symbol: str) -> dict:
@@ -157,10 +157,14 @@ class FinanceCog(commands.Cog):
         async with self.bot.http_session.get(_AV_URL, params=params) as resp:
             data = await resp.json()
 
+        if "Information" in data or "Note" in data:
+            msg = data.get("Information") or data.get("Note", "")
+            raise ValueError(f"AV rate limit for {symbol}: {msg[:80]}")
+
         series = data.get("Weekly Time Series", {})
         dates = list(series.keys())[:2]
         if len(dates) < 2:
-            raise ValueError(f"Not enough AV data for {symbol}: {list(data.keys())}")
+            raise ValueError(f"No AV data for {symbol}: {list(data.keys())}")
 
         close = float(series[dates[0]]["4. close"])
         prev_close = float(series[dates[1]]["4. close"])
@@ -186,13 +190,13 @@ class FinanceCog(commands.Cog):
 
     async def _fetch_news(self) -> list[dict]:
         try:
-            async with self.bot.http_session.get(_REUTERS_RSS_URL) as resp:
+            async with self.bot.http_session.get(_NEWS_RSS_URL) as resp:
                 if resp.status != 200:
-                    logger.warning("Reuters RSS returned HTTP %d", resp.status)
+                    logger.warning("CNBC RSS returned HTTP %d", resp.status)
                     return []
                 text = await resp.text()
         except Exception:
-            logger.exception("Reuters RSS fetch failed")
+            logger.exception("CNBC RSS fetch failed")
             return []
 
         soup = BeautifulSoup(text, "html.parser")
