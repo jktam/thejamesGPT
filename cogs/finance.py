@@ -21,7 +21,7 @@ _DIGEST_TIME = datetime.time(hour=14, minute=0, tzinfo=datetime.timezone.utc)
 
 _AV_URL = "https://www.alphavantage.co/query"
 _COINGECKO_URL = "https://api.coingecko.com/api/v3/coins/markets"
-_NEWS_RSS_URL = "https://www.cnbc.com/id/10000664/device/rss/rss.html"
+_NEWS_RSS_URL = "https://feeds.bbci.co.uk/news/business/rss.xml"
 
 _STOCK_SYMBOLS = {
     "S&P 500": "SPY",
@@ -125,7 +125,7 @@ class FinanceCog(commands.Cog):
         if card_text:
             embed.add_field(name="💳 Quarterly Bonus Categories", value=card_text, inline=False)
 
-        sources = ["Alpha Vantage", "CoinGecko", "CNBC", "Finnhub"]
+        sources = ["Alpha Vantage", "CoinGecko", "BBC", "Finnhub"]
         embed.set_footer(text="Data: " + " · ".join(sources))
         return embed
 
@@ -192,11 +192,11 @@ class FinanceCog(commands.Cog):
         try:
             async with self.bot.http_session.get(_NEWS_RSS_URL) as resp:
                 if resp.status != 200:
-                    logger.warning("CNBC RSS returned HTTP %d", resp.status)
+                    logger.warning("BBC RSS returned HTTP %d", resp.status)
                     return []
                 text = await resp.text()
         except Exception:
-            logger.exception("CNBC RSS fetch failed")
+            logger.exception("BBC RSS fetch failed")
             return []
 
         soup = BeautifulSoup(text, "html.parser")
