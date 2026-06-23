@@ -18,15 +18,17 @@ _QUARTER_MONTHS = {1: "Jan–Mar", 2: "Apr–Jun", 3: "Jul–Sep", 4: "Oct–Dec
 
 _DIGEST_TIME = datetime.time(hour=14, minute=0, tzinfo=datetime.timezone.utc)
 
-_FINNHUB_CANDLE_URL = "https://finnhub.io/api/v1/stock/candle"
 _COINGECKO_URL = "https://api.coingecko.com/api/v3/coins/markets"
-_REDDIT_URL = "https://old.reddit.com/r/investing/top.json"
-_REDDIT_HEADERS = {"User-Agent": "thejamesgpt-finance-bot/1.0"}
+_REDDIT_URL = "https://www.reddit.com/r/investing/top.json"
+_REDDIT_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; thejamesgpt-finance/1.0)",
+    "Accept": "application/json",
+}
 
-_STOCK_SYMBOLS = {
-    "S&P 500": "SPY",
-    "Nasdaq": "QQQ",
-    "Gold": "GLD",
+_STOOQ_SYMBOLS = {
+    "S&P 500": "spy",
+    "Nasdaq": "qqq",
+    "Gold": "gld",
 }
 
 
@@ -128,59 +130,38 @@ class FinanceCog(commands.Cog):
         if card_text:
             embed.add_field(name="💳 Quarterly Bonus Categories", value=card_text, inline=False)
 
-        sources = ["Finnhub", "CoinGecko", "Reddit"]
+        sources = ["Stooq", "CoinGecko", "Reddit"]
         embed.set_footer(text="Data: " + " · ".join(sources))
         return embed
 
     # ------------------------------------------------------------------ market
 
     async def _fetch_market(self) -> dict:
-        now = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
-        two_weeks_ago = now - 14 * 86400
+        tasks = {name: self._stooq_weekly(sym) for name, sym in _STOOQ_SYMBOLS.items()}
+        tasks["Bitcoin"] = self._coingecko_btc()
 
-        stock_tasks = {
-            name: self._finnhub_weekly_candle(symbol, two_weeks_ago, now)
-            for name, symbol in _STOCK_SYMBOLS.items()
-        }
-        btc_task = self._coingecko_btc()
-
-        results_list = await asyncio.gather(
-            *stock_tasks.values(), btc_task, return_exceptions=True
-        )
+        results = await asyncio.gather(*tasks.values(), return_exceptions=True)
 
         result = {}
-        for name, data in zip(stock_tasks.keys(), results_list):
+        for name, data in zip(tasks.keys(), results):
             if isinstance(data, dict):
                 result[name] = data
             else:
                 logger.error("Failed to fetch %s: %s", name, data)
-
-        btc = results_list[-1]
-        if isinstance(btc, dict):
-            result["Bitcoin"] = btc
-        else:
-            logger.error("Failed to fetch BTC: %s", btc)
-
         return result
 
-    async def _finnhub_weekly_candle(self, symbol: str, from_ts: int, to_ts: int) -> dict:
-        params = {
-            "symbol": symbol,
-            "resolution": "W",
-            "from": from_ts,
-            "to": to_ts,
-            "token": self.bot.settings.finnhub_api_key,
-        }
-        async with self.bot.http_session.get(_FINNHUB_CANDLE_URL, params=params) as resp:
-            data = await resp.json()
+    async def _stooq_weekly(self, symbol: str) -> dict:
+        url = f"https://stooq.com/q/d/l/?s={symbol}&i=w"
+        async with self.bot.http_session.get(url) as resp:
+            text = await resp.text()
 
-        closes = data.get("c") or []
-        if len(closes) < 2:
-            raise ValueError(f"Not enough candle data for {symbol}: {data}")
+        rows = [r for r in text.strip().splitlines() if r and not r.startswith("Date")]
+        if len(rows) < 2:
+            raise ValueError(f"Not enough Stooq data for {symbol}: {text[:80]}")
 
-        close = closes[-1]
-        prev = closes[-2]
-        pct = (close - prev) / prev * 100
+        close = float(rows[-1].split(",")[4])
+        prev_close = float(rows[-2].split(",")[4])
+        pct = (close - prev_close) / prev_close * 100
         price_str = f"{close:,.2f}" if close < 10_000 else f"{close:,.0f}"
         return {"price": price_str, "pct": pct}
 
@@ -202,10 +183,23 @@ class FinanceCog(commands.Cog):
 
     async def _fetch_reddit(self) -> list[dict]:
         params = {"t": "week", "limit": "5"}
-        async with self.bot.http_session.get(
-            _REDDIT_URL, params=params, headers=_REDDIT_HEADERS
-        ) as resp:
-            data = await resp.json(content_type=None)
+        try:
+            async with self.bot.http_session.get(
+                _REDDIT_URL, params=params, headers=_REDDIT_HEADERS
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning("Reddit returned HTTP %d", resp.status)
+                    return []
+                text = await resp.text()
+
+            if not text.strip():
+                logger.warning("Reddit returned empty body")
+                return []
+
+            data = json.loads(text)
+        except Exception:
+            logger.exception("Reddit fetch failed")
+            return []
 
         posts = []
         for child in data.get("data", {}).get("children", []):
