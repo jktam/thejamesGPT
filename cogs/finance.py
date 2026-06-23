@@ -314,7 +314,7 @@ class FinanceCog(commands.Cog):
         headlines = []
         for item in root.findall(".//item")[:5]:
             title = (item.findtext("title") or "").strip()
-            url = (item.findtext("guid") or item.findtext("link") or "").strip()
+            url = (item.findtext("link") or item.findtext("guid") or "").strip()
             if title and url:
                 headlines.append({"title": title[:120], "url": url})
         return headlines
