@@ -1,11 +1,13 @@
 {
-  "Chase Freedom Flex": {
-    "quarterly": {
-      "2026-Q1": ["Grocery Stores", "Fitness Clubs & Gym Memberships"],
-      "2026-Q2": ["Hotels", "Streaming Services"],
-      "2026-Q3": [],
+  "quarterly_cards": {
+    "Chase Freedom Flex": {
+      "2026-Q2": ["Amazon", "Chase Travel", "Feeding America"],
+      "2026-Q3": ["Gas Stations & EV Charging", "Public Transit", "Select Live Entertainment", "United Way"],
       "2026-Q4": []
-    },
-    "transfer_bonus": null
-  }
+    }
+  },
+  "chase_ur_transfer_bonus": [
+    "Virgin Atlantic +30%",
+    "Marriott Bonvoy +55%"
+  ]
 }

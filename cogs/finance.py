@@ -354,15 +354,15 @@ class FinanceCog(commands.Cog):
         months = _QUARTER_MONTHS[quarter]
 
         lines = []
-        for card, data in self._card_data.items():
-            quarterly = data.get("quarterly", {})
-            cats = quarterly.get(key, [])
-            transfer = data.get("transfer_bonus")
 
-            if cats:
-                lines.append(f"• **{card}:** {', '.join(cats)}")
-            if transfer:
-                lines.append(f"  ↳ Transfer bonus: {transfer}")
+        for card, cats in self._card_data.get("quarterly_cards", {}).items():
+            current = cats.get(key, [])
+            if current:
+                lines.append(f"• **{card}:** {', '.join(current)}")
+
+        transfer_bonuses = self._card_data.get("chase_ur_transfer_bonus") or []
+        if transfer_bonuses:
+            lines.append(f"• **UR Transfer Bonuses:** {', '.join(transfer_bonuses)}")
 
         if not lines:
             return None
