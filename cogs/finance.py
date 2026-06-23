@@ -6,7 +6,8 @@ import json
 import logging
 from pathlib import Path
 
-from bs4 import BeautifulSoup
+import xml.etree.ElementTree as ET
+
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
@@ -199,13 +200,11 @@ class FinanceCog(commands.Cog):
             logger.exception("BBC RSS fetch failed")
             return []
 
-        soup = BeautifulSoup(text, "html.parser")
+        root = ET.fromstring(text)
         headlines = []
-        for item in soup.find_all("item")[:5]:
-            title_el = item.find("title")
-            guid_el = item.find("guid")
-            title = title_el.get_text(strip=True) if title_el else ""
-            url = guid_el.get_text(strip=True) if guid_el else ""
+        for item in root.findall(".//item")[:5]:
+            title = (item.findtext("title") or "").strip()
+            url = (item.findtext("guid") or item.findtext("link") or "").strip()
             if title and url:
                 headlines.append({"title": title[:120], "url": url})
         return headlines
