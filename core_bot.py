@@ -27,7 +27,7 @@ class JamesBot(commands.Bot):
         timeout = aiohttp.ClientTimeout(total=self.settings.http_timeout_seconds)
         self.http_session = aiohttp.ClientSession(timeout=timeout)
 
-        for ext in ("cogs.general", "cogs.ai", "cogs.places", "cogs.fun"):
+        for ext in ("cogs.general", "cogs.ai", "cogs.places", "cogs.fun", "cogs.finance"):
             await self.load_extension(ext)
             logger.info("Loaded extension %s", ext)
 

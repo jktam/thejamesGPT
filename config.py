@@ -21,6 +21,10 @@ class Settings:
     openai_timeout_seconds: int
     max_text_chunks: int
     image_timeout_seconds: int
+    finance_channel_id: int | None
+    finnhub_api_key: str | None
+    reddit_client_id: str | None
+    reddit_client_secret: str | None
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -28,6 +32,7 @@ class Settings:
         openai_api_key = os.getenv("CHATGPT_API_KEY")
         google_api_key = os.getenv("GOOGLE_GEO_PLACES_API_KEY")
         guild_id_raw = os.getenv("GUILD_ID")
+        finance_channel_id_raw = os.getenv("FINANCE_CHANNEL_ID")
 
         if not discord_token:
             raise RuntimeError("Missing DISCORD_BOT_API_KEY")
@@ -46,6 +51,10 @@ class Settings:
             openai_timeout_seconds=int(os.getenv("OPENAI_TIMEOUT_SECONDS", "45")),
             max_text_chunks=int(os.getenv("MAX_TEXT_CHUNKS", "6")),
             image_timeout_seconds=int(os.getenv("OPENAI_IMAGE_TIMEOUT_SECONDS", "90")),
+            finance_channel_id=int(finance_channel_id_raw) if finance_channel_id_raw else None,
+            finnhub_api_key=os.getenv("FINNHUB_API_KEY"),
+            reddit_client_id=os.getenv("REDDIT_CLIENT_ID"),
+            reddit_client_secret=os.getenv("REDDIT_CLIENT_SECRET"),
         )
 
 
