@@ -1,14 +1,11 @@
 {
   "Chase Freedom Flex": {
-    "2026-Q1": ["Grocery Stores", "Fitness Clubs & Gym Memberships"],
-    "2026-Q2": ["Hotels", "Streaming Services"],
-    "2026-Q3": [],
-    "2026-Q4": []
-  },
-  "Discover it": {
-    "2026-Q1": ["Restaurants", "Drug Stores"],
-    "2026-Q2": ["Gas Stations", "Home Improvement Stores"],
-    "2026-Q3": [],
-    "2026-Q4": []
+    "quarterly": {
+      "2026-Q1": ["Grocery Stores", "Fitness Clubs & Gym Memberships"],
+      "2026-Q2": ["Hotels", "Streaming Services"],
+      "2026-Q3": [],
+      "2026-Q4": []
+    },
+    "transfer_bonus": null
   }
 }
