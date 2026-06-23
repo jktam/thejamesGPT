@@ -25,7 +25,7 @@ _COINGECKO_MARKETS_URL = "https://api.coingecko.com/api/v3/coins/markets"
 _COINGECKO_PRICE_URL = "https://api.coingecko.com/api/v3/simple/price"
 _FINNHUB_QUOTE_URL = "https://finnhub.io/api/v1/quote"
 _FINNHUB_ECON_URL = "https://finnhub.io/api/v1/calendar/economic"
-_NEWS_RSS_URL = "https://feeds.bbci.co.uk/news/business/rss.xml"
+_NEWS_RSS_URL = "https://feeds.a.dj.com/rss/RSSMarketsMain.xml"
 
 _STOCK_SYMBOLS = {
     "S&P 500": "SPY",
@@ -146,7 +146,7 @@ class FinanceCog(commands.Cog):
         if card_text:
             embed.add_field(name="💳 Chase Bonus Categories", value=card_text, inline=False)
 
-        embed.set_footer(text="Data: Alpha Vantage · CoinGecko · BBC · Finnhub")
+        embed.set_footer(text="Data: Alpha Vantage · CoinGecko · WSJ · Finnhub")
         return embed
 
     # ------------------------------------------------------------------ daily alert
@@ -303,11 +303,11 @@ class FinanceCog(commands.Cog):
         try:
             async with self.bot.http_session.get(_NEWS_RSS_URL) as resp:
                 if resp.status != 200:
-                    logger.warning("BBC RSS returned HTTP %d", resp.status)
+                    logger.warning("WSJ RSS returned HTTP %d", resp.status)
                     return []
                 text = await resp.text()
         except Exception:
-            logger.exception("BBC RSS fetch failed")
+            logger.exception("WSJ RSS fetch failed")
             return []
 
         root = ET.fromstring(text)
