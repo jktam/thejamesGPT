@@ -18,6 +18,12 @@ HELP_SECTIONS = {
         "/eats — Find nearby restaurants.",
         "/addy — Look up a restaurant address.",
     ],
+    "Finance": [
+        "/finance — Show the latest finance digest.",
+        "/watch add — Track a ticker in finance news.",
+        "/watch remove — Stop tracking a ticker.",
+        "/watch list — Show the server watchlist.",
+    ],
     "Translation": [
         "/translate — Translate text into another language.",
     ],

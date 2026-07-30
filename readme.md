@@ -28,10 +28,23 @@ Most commands support `visibility: public` or `visibility: private`.
 - `/eats` - Find nearby restaurants
 - `/addy` - Look up a restaurant address
 
+### Finance
+- `/finance` - Show ETF/Bitcoin changes, upcoming US economic events, headlines, and card categories
+- `/watch add` - Add a ticker and optional company name to the shared server watchlist
+- `/watch remove` - Remove a ticker from the watchlist
+- `/watch list` - Show the server watchlist
+- Posts a Friday digest and Mon–Thu threshold alerts at 5 PM Eastern when `FINANCE_CHANNEL_ID` is set and the bot is online
+
 ## Notes
 
 - `/ask` is tuned for short follow-ups in the same channel
 - `/img` can fall back to an attached image if the API does not return a URL
+- Finance data comes from Alpha Vantage, Finnhub, CoinGecko, WSJ, CNBC, and the Federal Reserve
+- News is limited to the last 72 hours, sorted newest-first, and deduplicated across sources and scheduled posts
+- Watchlist and rate-cut/FOMC headlines are prioritized; watchlists persist per server in SQLite
+- Chase Freedom categories refresh from Chase's official calendar, with a matching-quarter local fallback
+- Market data may be delayed; ETF prices are proxies and output is informational, not investment advice
+- Finance requests are cached for 5 minutes and `/finance` is limited to once per user per minute
 - Slash commands are synced on startup
 - The bot uses a shared `aiohttp` session
 
@@ -47,3 +60,6 @@ Most commands support `visibility: public` or `visibility: private`.
 - `OPENAI_CHAT_MODEL`
 - `OPENAI_IMAGE_MODEL`
 - `BOT_STATUS_TEXT`
+- `FINANCE_CHANNEL_ID` - Channel for scheduled digests and alerts
+- `ALPHA_VANTAGE_API_KEY` - Enables weekly ETF data
+- `FINNHUB_API_KEY` - Enables SPY alerts; economic calendar access may require a paid Finnhub plan
