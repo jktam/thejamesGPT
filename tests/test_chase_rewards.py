@@ -3,7 +3,11 @@ from __future__ import annotations
 import datetime
 import unittest
 
-from services.chase_rewards import parse_chase_freedom_categories
+from services.chase_rewards import (
+    TransferBonus,
+    parse_chase_freedom_categories,
+    parse_chase_transfer_bonuses,
+)
 
 
 CALENDAR_HTML = """
@@ -20,6 +24,26 @@ CALENDAR_HTML = """
   <h4>October &ndash; December</h4>
   <p>Coming Soon</p>
 </main>
+"""
+
+TRANSFER_HTML = r"""
+<html>
+  <h1>Current credit card transfer bonuses: July 2026</h1>
+  <script>
+    self.__next_f.push([1,"content \u003ctable\u003e
+    \u003ctr\u003e\u003ctd\u003eTransferable rewards\u003c/td\u003e
+    \u003ctd\u003eTransfer partner\u003c/td\u003e
+    \u003ctd\u003eTransfer bonus\u003c/td\u003e
+    \u003ctd\u003eExpires\u003c/td\u003e\u003c/tr\u003e
+    \u003ctr\u003e\u003ctd\u003eChase Ultimate Rewards\u003c/td\u003e
+    \u003ctd\u003eIHG\u003c/td\u003e\u003ctd\u003e100%\u003c/td\u003e
+    \u003ctd\u003e07/31/26\u003c/td\u003e\u003c/tr\u003e
+    \u003ctr\u003e\u003ctd\u003eAmex Membership Rewards\u003c/td\u003e
+    \u003ctd\u003eHilton\u003c/td\u003e\u003ctd\u003e20%\u003c/td\u003e
+    \u003ctd\u003e07/31/26\u003c/td\u003e\u003c/tr\u003e
+    \u003c/table\u003e"])
+  </script>
+</html>
 """
 
 
@@ -56,6 +80,39 @@ class ChaseRewardsTests(unittest.TestCase):
         )
 
         self.assertIsNone(categories)
+
+    def test_extracts_only_active_chase_transfer_bonuses(self):
+        bonuses = parse_chase_transfer_bonuses(
+            TRANSFER_HTML,
+            datetime.date(2026, 7, 29),
+        )
+
+        self.assertEqual(
+            bonuses,
+            (
+                TransferBonus(
+                    partner="IHG",
+                    bonus="100%",
+                    expires_on=datetime.date(2026, 7, 31),
+                ),
+            ),
+        )
+
+    def test_rejects_expired_transfer_bonuses(self):
+        bonuses = parse_chase_transfer_bonuses(
+            TRANSFER_HTML,
+            datetime.date(2026, 8, 1),
+        )
+
+        self.assertEqual(bonuses, ())
+
+    def test_rejects_stale_month_transfer_page(self):
+        bonuses = parse_chase_transfer_bonuses(
+            TRANSFER_HTML,
+            datetime.date(2026, 6, 30),
+        )
+
+        self.assertEqual(bonuses, ())
 
 
 if __name__ == "__main__":

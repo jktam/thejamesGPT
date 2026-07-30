@@ -42,7 +42,7 @@ Most commands support `visibility: public` or `visibility: private`.
 - Finance data comes from Alpha Vantage, Finnhub, CoinGecko, WSJ, CNBC, and the Federal Reserve
 - News is limited to the last 72 hours, sorted newest-first, and deduplicated across sources and scheduled posts
 - Watchlist and rate-cut/FOMC headlines are prioritized; watchlists persist per server in SQLite
-- Chase Freedom categories refresh from Chase's official calendar, with a matching-quarter local fallback
+- Chase Freedom categories refresh from Chase's calendar; active Ultimate Rewards transfer bonuses come from a current-month third-party tracker and should be verified in Chase
 - Market data may be delayed; ETF prices are proxies and output is informational, not investment advice
 - Finance requests are cached for 5 minutes and `/finance` is limited to once per user per minute
 - Slash commands are synced on startup

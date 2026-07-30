@@ -3,10 +3,8 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 import datetime
-import json
 import logging
 import math
-from pathlib import Path
 import re
 from time import monotonic
 from typing import Any
@@ -19,7 +17,10 @@ from discord.ext import commands, tasks
 
 from services.chase_rewards import (
     CHASE_FREEDOM_CALENDAR_URL,
+    CHASE_TRANSFER_BONUS_URL,
+    TransferBonus,
     parse_chase_freedom_categories,
+    parse_chase_transfer_bonuses,
 )
 from services.finance_news import (
     NEWS_MAX_AGE_HOURS,
@@ -35,8 +36,6 @@ from services.finance_store import (
 )
 
 logger = logging.getLogger(__name__)
-
-_CARD_CATEGORIES_PATH = Path(__file__).parent.parent / "data" / "card_categories.json"
 
 _QUARTER_MONTHS = {1: "Jan–Mar", 2: "Apr–Jun", 3: "Jul–Sep", 4: "Oct–Dec"}
 
@@ -67,8 +66,9 @@ _DIGEST_CACHE_SECONDS = 5 * 60
 _MAX_CRYPTO_AGE_SECONDS = 60 * 60
 _MAX_WEEKLY_DATA_AGE_DAYS = 10
 _MAX_RSS_BYTES = 512 * 1024
-_MAX_CHASE_PAGE_BYTES = 1024 * 1024
+_MAX_REWARDS_PAGE_BYTES = 1024 * 1024
 _EMBED_FIELD_LIMIT = 1024
+_REWARDS_FOOTER_RESERVE = 300
 _SYMBOL_PATTERN = re.compile(r"^[A-Z][A-Z0-9.-]{0,9}$")
 _MAX_COMPANY_NAME_LENGTH = 80
 
@@ -110,7 +110,6 @@ def _is_fresh_timestamp(timestamp: Any, max_age_seconds: int) -> bool:
 class FinanceCog(commands.Cog):
     def __init__(self, bot) -> None:
         self.bot = bot
-        self._card_data: dict = self._load_card_categories()
         self.finance_store = FinanceStore()
         self._digest_cache: dict[int | None, tuple[float, DigestResult]] = {}
         self._digest_lock = asyncio.Lock()
@@ -134,14 +133,6 @@ class FinanceCog(commands.Cog):
                 await interaction.response.send_message(message, ephemeral=True)
             return
         raise error
-
-    @staticmethod
-    def _load_card_categories() -> dict:
-        try:
-            return json.loads(_CARD_CATEGORIES_PATH.read_text())
-        except Exception:
-            logger.warning("Could not load card_categories.json")
-            return {}
 
     # ------------------------------------------------------------------ tasks
 
@@ -769,77 +760,103 @@ class FinanceCog(commands.Cog):
     async def _fetch_card_section(self) -> str | None:
         today = _market_today()
         quarter = (today.month - 1) // 3 + 1
-        key = f"{today.year}-Q{quarter}"
         months = _QUARTER_MONTHS[quarter]
 
+        official_categories, transfer_bonuses = await asyncio.gather(
+            self._fetch_chase_freedom_categories(today),
+            self._fetch_chase_transfer_bonuses(today),
+        )
+
         lines = []
-        official_categories = await self._fetch_chase_freedom_categories(today)
-
-        for card, cats in self._card_data.get("quarterly_cards", {}).items():
-            current = (
-                official_categories
-                if card == "Chase Freedom Flex" and official_categories
-                else cats.get(key, [])
+        body_limit = _EMBED_FIELD_LIMIT - _REWARDS_FOOTER_RESERVE
+        showed_categories = False
+        showed_transfer_bonus = False
+        if official_categories:
+            categories = ", ".join(
+                safe_markdown_text(category, 80)
+                for category in official_categories
             )
-            if current:
-                lines.append(f"• **{card}:** {', '.join(current)}")
+            category_line = (
+                f"• **Freedom Flex Q{quarter} ({months}):** {categories}"
+            )
+            if len(category_line) <= body_limit:
+                lines.append(category_line)
+                showed_categories = True
 
-        transfer_bonuses = self._card_data.get("chase_ur_transfer_bonus") or []
-        active_bonuses = []
         for bonus in transfer_bonuses:
-            if not isinstance(bonus, dict):
-                continue
-            try:
-                starts_on = datetime.date.fromisoformat(bonus["starts_on"])
-                ends_on = datetime.date.fromisoformat(bonus["ends_on"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            if starts_on <= today <= ends_on:
-                active_bonuses.append(safe_markdown_text(bonus.get("name"), 100))
-        if active_bonuses:
-            lines.append(f"• **UR Transfer Bonuses:** {', '.join(active_bonuses)}")
+            partner = safe_markdown_text(bonus.partner, 80)
+            bonus_text = safe_markdown_text(bonus.bonus, 80)
+            displayed_bonus = (
+                bonus_text
+                if bonus_text.lower().startswith("up to ")
+                else f"+{bonus_text}"
+            )
+            expiration = bonus.expires_on.strftime("%b %d")
+            bonus_line = (
+                f"• **Ultimate Rewards → {partner}:** "
+                f"{displayed_bonus} through {expiration}"
+            )
+            candidate = "\n".join((*lines, bonus_line))
+            if len(candidate) <= body_limit:
+                lines.append(bonus_line)
+                showed_transfer_bonus = True
+
+        sources = []
+        if showed_categories:
+            sources.append(f"[Chase calendar]({CHASE_FREEDOM_CALENDAR_URL})")
+        if showed_transfer_bonus:
+            sources.append(f"[PointsYeah tracker]({CHASE_TRANSFER_BONUS_URL})")
 
         if not lines:
             return None
-        source = (
-            f"\n[Official Chase calendar]({CHASE_FREEDOM_CALENDAR_URL})"
-            if official_categories
-            else "\nLocal current-quarter fallback"
-        )
-        return f"Q{quarter} ({months})\n" + "\n".join(lines) + source
+        footer = " · ".join(sources)
+        if showed_transfer_bonus:
+            footer += "\nVerify transfer offers in Chase before moving points."
+        return "\n".join((*lines, footer))
+
+    async def _fetch_rewards_page(self, label: str, url: str) -> str | None:
+        session = self.bot.http_session
+        if session is None:
+            logger.warning("%s fetch skipped: HTTP session is not initialized", label)
+            return None
+
+        try:
+            async with session.get(url, allow_redirects=False) as response:
+                if response.status != 200:
+                    logger.warning("%s returned HTTP %d", label, response.status)
+                    return None
+                raw = await response.content.read(_MAX_REWARDS_PAGE_BYTES + 1)
+                if len(raw) > _MAX_REWARDS_PAGE_BYTES:
+                    logger.warning("%s exceeded size limit", label)
+                    return None
+        except Exception:
+            logger.exception("%s fetch failed", label)
+            return None
+        return raw.decode("utf-8", errors="replace")
 
     async def _fetch_chase_freedom_categories(
         self,
         today: datetime.date,
     ) -> tuple[str, ...] | None:
-        session = self.bot.http_session
-        if session is None:
-            logger.warning("Chase rewards fetch skipped: HTTP session is not initialized")
-            return None
-
-        try:
-            async with session.get(
-                CHASE_FREEDOM_CALENDAR_URL,
-                allow_redirects=False,
-            ) as response:
-                if response.status != 200:
-                    logger.warning(
-                        "Chase rewards page returned HTTP %d",
-                        response.status,
-                    )
-                    return None
-                raw = await response.content.read(_MAX_CHASE_PAGE_BYTES + 1)
-                if len(raw) > _MAX_CHASE_PAGE_BYTES:
-                    logger.warning("Chase rewards page exceeded size limit")
-                    return None
-        except Exception:
-            logger.exception("Chase rewards page fetch failed")
-            return None
-
-        return parse_chase_freedom_categories(
-            raw.decode("utf-8", errors="replace"),
-            today,
+        html = await self._fetch_rewards_page(
+            "Chase rewards page",
+            CHASE_FREEDOM_CALENDAR_URL,
         )
+        if html is None:
+            return None
+        return parse_chase_freedom_categories(html, today)
+
+    async def _fetch_chase_transfer_bonuses(
+        self,
+        today: datetime.date,
+    ) -> tuple[TransferBonus, ...]:
+        html = await self._fetch_rewards_page(
+            "Transfer bonus tracker",
+            CHASE_TRANSFER_BONUS_URL,
+        )
+        if html is None:
+            return ()
+        return parse_chase_transfer_bonuses(html, today)
 
     # ------------------------------------------------------------------ slash
 
