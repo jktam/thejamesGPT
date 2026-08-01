@@ -4,8 +4,10 @@ import datetime
 import unittest
 
 from services.chase_rewards import (
+    FreedomQuarter,
     TransferBonus,
     parse_chase_freedom_categories,
+    parse_chase_freedom_quarters,
     parse_chase_transfer_bonuses,
 )
 
@@ -72,6 +74,42 @@ class ChaseRewardsTests(unittest.TestCase):
         )
 
         self.assertIsNone(categories)
+
+    def test_disclosed_upcoming_quarter_is_included(self):
+        html = CALENDAR_HTML.replace(
+            "<p>Coming Soon</p>",
+            "<p>PayPal | Department Stores</p>",
+        )
+
+        quarters = parse_chase_freedom_quarters(
+            html,
+            datetime.date(2026, 7, 29),
+        )
+
+        self.assertEqual(
+            quarters,
+            (
+                FreedomQuarter(
+                    3,
+                    (
+                        "Gas Stations",
+                        "Public Transit",
+                        "EV Charging",
+                        "Select Live Entertainment",
+                        "United Way",
+                    ),
+                ),
+                FreedomQuarter(4, ("PayPal", "Department Stores")),
+            ),
+        )
+
+    def test_year_end_does_not_repeat_past_quarters(self):
+        quarters = parse_chase_freedom_quarters(
+            CALENDAR_HTML,
+            datetime.date(2026, 10, 1),
+        )
+
+        self.assertEqual(quarters, ())
 
     def test_rejects_calendar_for_the_wrong_year(self):
         categories = parse_chase_freedom_categories(

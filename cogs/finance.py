@@ -18,8 +18,9 @@ from discord.ext import commands, tasks
 from services.chase_rewards import (
     CHASE_FREEDOM_CALENDAR_URL,
     CHASE_TRANSFER_BONUS_URL,
+    FreedomQuarter,
     TransferBonus,
-    parse_chase_freedom_categories,
+    parse_chase_freedom_quarters,
     parse_chase_transfer_bonuses,
 )
 from services.finance_news import (
@@ -27,8 +28,8 @@ from services.finance_news import (
     NewsArticle,
     format_article_age,
     parse_feed,
+    rank_articles,
     safe_markdown_text,
-    split_ranked_articles,
 )
 from services.finance_store import (
     FinanceStore,
@@ -48,10 +49,15 @@ _COINGECKO_PRICE_URL = "https://api.coingecko.com/api/v3/simple/price"
 _FINNHUB_QUOTE_URL = "https://finnhub.io/api/v1/quote"
 _FINNHUB_ECON_URL = "https://finnhub.io/api/v1/calendar/economic"
 _NEWS_FEEDS = (
-    ("WSJ Markets", "https://feeds.a.dj.com/rss/RSSMarketsMain.xml"),
     ("CNBC Finance", "https://www.cnbc.com/id/10000664/device/rss/rss.html"),
+    ("NYT Business", "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml"),
+    ("BBC Business", "https://feeds.bbci.co.uk/news/business/rss.xml"),
     ("Federal Reserve", "https://www.federalreserve.gov/feeds/press_monetary.xml"),
 )
+_RSS_HEADERS = {
+    "Accept": "application/rss+xml, application/xml, text/xml",
+    "User-Agent": "TheJamesGPT/1.0 (+https://github.com/jktam/thejamesGPT)",
+}
 
 _STOCK_SYMBOLS = {
     "S&P 500 ETF (SPY)": "SPY",
@@ -355,26 +361,15 @@ class FinanceCog(commands.Cog):
                     article for article in articles if article.fingerprint in unseen
                 ]
 
-            priority_news, general_news = split_ranked_articles(
+            ranked_news = rank_articles(
                 articles,
                 watchlist,
             )
-            if priority_news:
-                value, rendered = self._fit_news_items(priority_news)
+            if ranked_news:
+                value, rendered = self._fit_news_items(ranked_news)
                 if value:
                     embed.add_field(
-                        name="🎯 Watchlist & Rate-Cut News",
-                        value=value,
-                        inline=False,
-                    )
-                    shown_articles.extend(rendered)
-            if general_news:
-                value, rendered = self._fit_news_items(
-                    [(article, []) for article in general_news]
-                )
-                if value:
-                    embed.add_field(
-                        name="📰 Fresh Finance Headlines",
+                        name="📰 Finance News",
                         value=value,
                         inline=False,
                     )
@@ -395,7 +390,7 @@ class FinanceCog(commands.Cog):
             )
 
         if isinstance(card_text, str) and card_text:
-            embed.add_field(name="💳 Chase Bonus Categories", value=card_text, inline=False)
+            embed.add_field(name="💳 Chase Rewards", value=card_text, inline=False)
 
         embed.set_footer(
             text="Data may be delayed · Informational only, not investment advice"
@@ -683,6 +678,7 @@ class FinanceCog(commands.Cog):
                 raise FinanceAPIError("HTTP session is not initialized")
             async with self.bot.http_session.get(
                 url,
+                headers=_RSS_HEADERS,
                 allow_redirects=False,
             ) as resp:
                 if resp.status != 200:
@@ -759,30 +755,44 @@ class FinanceCog(commands.Cog):
 
     async def _fetch_card_section(self) -> str | None:
         today = _market_today()
-        quarter = (today.month - 1) // 3 + 1
-        months = _QUARTER_MONTHS[quarter]
-
-        official_categories, transfer_bonuses = await asyncio.gather(
-            self._fetch_chase_freedom_categories(today),
+        freedom_quarters, transfer_bonuses = await asyncio.gather(
+            self._fetch_chase_freedom_quarters(today),
             self._fetch_chase_transfer_bonuses(today),
         )
+        return self._format_card_section(today, freedom_quarters, transfer_bonuses)
 
+    @staticmethod
+    def _format_card_section(
+        today: datetime.date,
+        freedom_quarters: tuple[FreedomQuarter, ...],
+        transfer_bonuses: tuple[TransferBonus, ...],
+    ) -> str | None:
+        quarter = (today.month - 1) // 3 + 1
         lines = []
         body_limit = _EMBED_FIELD_LIMIT - _REWARDS_FOOTER_RESERVE
         showed_categories = False
         showed_transfer_bonus = False
-        if official_categories:
+        quarter_parts = []
+        for item in freedom_quarters:
             categories = ", ".join(
-                safe_markdown_text(category, 80)
-                for category in official_categories
+                safe_markdown_text(category, 80) for category in item.categories
+            )
+            status = "current" if item.quarter == quarter else "upcoming"
+            part = (
+                f"Q{item.quarter} ({_QUARTER_MONTHS[item.quarter]}, {status}): "
+                f"{categories}"
             )
             category_line = (
-                f"• **Freedom Flex Q{quarter} ({months}):** {categories}"
+                "• **Freedom Flex 5%:** " + "; ".join((*quarter_parts, part))
             )
             if len(category_line) <= body_limit:
-                lines.append(category_line)
+                quarter_parts.append(part)
                 showed_categories = True
 
+        if quarter_parts:
+            lines.append("• **Freedom Flex 5%:** " + "; ".join(quarter_parts))
+
+        transfer_parts = []
         for bonus in transfer_bonuses:
             partner = safe_markdown_text(bonus.partner, 80)
             bonus_text = safe_markdown_text(bonus.bonus, 80)
@@ -792,14 +802,23 @@ class FinanceCog(commands.Cog):
                 else f"+{bonus_text}"
             )
             expiration = bonus.expires_on.strftime("%b %d")
+            transfer_part = (
+                f"{partner} {displayed_bonus} through {expiration}"
+            )
             bonus_line = (
-                f"• **Ultimate Rewards → {partner}:** "
-                f"{displayed_bonus} through {expiration}"
+                "• **Ultimate Rewards transfer bonuses:** "
+                + ", ".join((*transfer_parts, transfer_part))
             )
             candidate = "\n".join((*lines, bonus_line))
             if len(candidate) <= body_limit:
-                lines.append(bonus_line)
+                transfer_parts.append(transfer_part)
                 showed_transfer_bonus = True
+
+        if transfer_parts:
+            lines.append(
+                "• **Ultimate Rewards transfer bonuses:** "
+                + ", ".join(transfer_parts)
+            )
 
         sources = []
         if showed_categories:
@@ -834,17 +853,17 @@ class FinanceCog(commands.Cog):
             return None
         return raw.decode("utf-8", errors="replace")
 
-    async def _fetch_chase_freedom_categories(
+    async def _fetch_chase_freedom_quarters(
         self,
         today: datetime.date,
-    ) -> tuple[str, ...] | None:
+    ) -> tuple[FreedomQuarter, ...]:
         html = await self._fetch_rewards_page(
             "Chase rewards page",
             CHASE_FREEDOM_CALENDAR_URL,
         )
         if html is None:
-            return None
-        return parse_chase_freedom_categories(html, today)
+            return ()
+        return parse_chase_freedom_quarters(html, today)
 
     async def _fetch_chase_transfer_bonuses(
         self,

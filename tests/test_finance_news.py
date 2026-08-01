@@ -10,6 +10,7 @@ from services.finance_news import (
     article_tags,
     dedupe_articles,
     parse_feed,
+    rank_articles,
 )
 from services.finance_store import FinanceStore, WatchItem
 
@@ -96,6 +97,86 @@ class FinanceNewsTests(unittest.TestCase):
         )
 
         self.assertEqual(article_tags(article, []), ["RATES"])
+
+    def test_ranked_news_combines_priorities_with_source_variety(self):
+        articles = [
+            NewsArticle(
+                source="Federal Reserve",
+                title="Federal Reserve issues FOMC statement",
+                url="https://www.federalreserve.gov/example",
+                published_at=NOW,
+            ),
+            *(
+                NewsArticle(
+                    source="NYT Business",
+                    title=f"Business headline {index}",
+                    url=f"https://www.nytimes.com/business/{index}",
+                    published_at=NOW - datetime.timedelta(minutes=index),
+                )
+                for index in range(1, 5)
+            ),
+            NewsArticle(
+                source="BBC Business",
+                title="Technology industry headline",
+                url="https://www.bbc.co.uk/news/example",
+                published_at=NOW - datetime.timedelta(minutes=5),
+            ),
+        ]
+
+        ranked = rank_articles(articles, [])
+
+        self.assertEqual(len(ranked), 5)
+        self.assertEqual(ranked[0][1], ["RATES"])
+        self.assertEqual(
+            {article.source for article, _ in ranked},
+            {"Federal Reserve", "NYT Business", "BBC Business"},
+        )
+
+    def test_ranked_news_caps_rate_and_watchlist_headlines(self):
+        watchlist = [WatchItem(symbol="NVDA", company_name="Nvidia")]
+        articles = [
+            NewsArticle(
+                source=f"Source {index % 3}",
+                title=(
+                    f"Nvidia expects Fed rate cut {index}"
+                    if index < 3
+                    else f"Interest rates headline {index}"
+                    if index < 6
+                    else f"Finance headline {index}"
+                ),
+                url=f"https://example.com/{index}",
+                published_at=NOW - datetime.timedelta(minutes=index),
+            )
+            for index in range(9)
+        ]
+
+        ranked = rank_articles(articles, watchlist)
+        tags = [article_tags for _, article_tags in ranked]
+
+        self.assertEqual(len(ranked), 5)
+        self.assertLessEqual(sum("NVDA" in item for item in tags), 2)
+        self.assertLessEqual(sum("RATES" in item for item in tags), 2)
+        self.assertTrue(any(not item for item in tags))
+
+    def test_official_fed_news_outranks_newer_global_rate_news(self):
+        articles = [
+            NewsArticle(
+                source="BBC Business",
+                title="Bank of England holds interest rates",
+                url="https://example.com/uk-rates",
+                published_at=NOW,
+            ),
+            NewsArticle(
+                source="Federal Reserve",
+                title="Federal Reserve issues FOMC statement",
+                url="https://example.com/fomc",
+                published_at=NOW - datetime.timedelta(days=1),
+            ),
+        ]
+
+        ranked = rank_articles(articles, [], limit=1)
+
+        self.assertEqual(ranked[0][0].source, "Federal Reserve")
 
 
 class FinanceStoreTests(unittest.TestCase):

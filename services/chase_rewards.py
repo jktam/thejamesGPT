@@ -36,17 +36,23 @@ class TransferBonus:
     expires_on: datetime.date
 
 
+@dataclass(frozen=True, slots=True)
+class FreedomQuarter:
+    quarter: int
+    categories: tuple[str, ...]
+
+
 def _clean_text(value: str) -> str:
     value = value.replace("\u2013", "-").replace("\u2014", "-")
     value = re.sub(r"[\u00ae\u2120\u2122]", "", value)
     return re.sub(r"\s+", " ", value).strip()
 
 
-def parse_chase_freedom_categories(
+def parse_chase_freedom_quarters(
     html: str,
     today: datetime.date,
-) -> tuple[str, ...] | None:
-    """Extract the current quarter from Chase's official Freedom calendar."""
+) -> tuple[FreedomQuarter, ...]:
+    """Extract disclosed current and upcoming quarters from Chase's calendar."""
     soup = BeautifulSoup(html, "html.parser")
     lines = [
         cleaned
@@ -56,37 +62,51 @@ def parse_chase_freedom_categories(
 
     year_marker = f"quarterly cash back {today.year} calendar"
     if not any(year_marker in line.lower() for line in lines):
-        return None
+        return ()
 
-    quarter = (today.month - 1) // 3 + 1
-    target = _QUARTER_LABELS[quarter]
-    try:
-        start = lines.index(target)
-    except ValueError:
-        return None
-
+    current_quarter = (today.month - 1) // 3 + 1
     other_labels = set(_QUARTER_LABELS.values())
-    candidates: list[str] = []
-    for line in lines[start + 1 :]:
-        if line in other_labels:
-            break
-        lowered = line.lower()
-        if lowered == "coming soon":
-            return None
-        if "|" not in line or lowered.startswith(_BOILERPLATE_PREFIXES):
+    disclosed = []
+    for quarter in range(current_quarter, 5):
+        target = _QUARTER_LABELS[quarter]
+        try:
+            start = lines.index(target)
+        except ValueError:
             continue
-        candidates = [_clean_text(item) for item in line.split("|")]
-        break
 
-    categories = tuple(
-        category
-        for category in candidates
-        if 2 <= len(category) <= 80
-        and category.lower() != "coming soon"
-    )
-    if not 1 <= len(categories) <= 8:
-        return None
-    return categories
+        candidates: list[str] = []
+        for line in lines[start + 1 :]:
+            if line in other_labels:
+                break
+            lowered = line.lower()
+            if lowered == "coming soon":
+                break
+            if "|" not in line or lowered.startswith(_BOILERPLATE_PREFIXES):
+                continue
+            candidates = [_clean_text(item) for item in line.split("|")]
+            break
+
+        categories = tuple(
+            category
+            for category in candidates
+            if 2 <= len(category) <= 80
+            and category.lower() != "coming soon"
+        )
+        if 1 <= len(categories) <= 8:
+            disclosed.append(FreedomQuarter(quarter, categories))
+    return tuple(disclosed)
+
+
+def parse_chase_freedom_categories(
+    html: str,
+    today: datetime.date,
+) -> tuple[str, ...] | None:
+    """Extract current-quarter categories for callers needing the legacy shape."""
+    current_quarter = (today.month - 1) // 3 + 1
+    for item in parse_chase_freedom_quarters(html, today):
+        if item.quarter == current_quarter:
+            return item.categories
+    return None
 
 
 def _parse_expiration(value: str) -> datetime.date | None:

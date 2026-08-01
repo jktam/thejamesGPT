@@ -11,13 +11,15 @@ from cogs.finance import (
     FinanceAPIError,
     FinanceCog,
 )
+from services.chase_rewards import FreedomQuarter, TransferBonus
 from services.finance_news import NewsArticle, safe_http_url
 
 
 class FakeResponse:
-    def __init__(self, payload, *, status: int = 200) -> None:
+    def __init__(self, payload, *, status: int = 200, raw: bytes = b"") -> None:
         self.payload = payload
         self.status = status
+        self.content = FakeContent(raw)
 
     async def __aenter__(self):
         return self
@@ -27,6 +29,14 @@ class FakeResponse:
 
     async def json(self, *, content_type=None):
         return self.payload
+
+
+class FakeContent:
+    def __init__(self, raw: bytes) -> None:
+        self.raw = raw
+
+    async def read(self, limit: int) -> bytes:
+        return self.raw[:limit]
 
 
 class FakeSession:
@@ -39,8 +49,13 @@ class FakeSession:
         return self.response
 
 
-def build_cog(payload, *, status: int = 200) -> tuple[FinanceCog, FakeSession]:
-    session = FakeSession(FakeResponse(payload, status=status))
+def build_cog(
+    payload,
+    *,
+    status: int = 200,
+    raw: bytes = b"<rss><channel /></rss>",
+) -> tuple[FinanceCog, FakeSession]:
+    session = FakeSession(FakeResponse(payload, status=status, raw=raw))
     cog = FinanceCog.__new__(FinanceCog)
     cog.bot = SimpleNamespace(
         http_session=session,
@@ -125,6 +140,16 @@ class FinanceTests(unittest.TestCase):
         self.assertIsNone(safe_http_url("javascript:alert(1)"))
         self.assertIsNone(safe_http_url("//example.com/article"))
 
+    def test_news_feed_identifies_rss_reader(self):
+        cog, session = build_cog({})
+
+        asyncio.run(cog._fetch_news_feed("Test Feed", "https://example.test/rss"))
+
+        _, request = session.requests[0]
+        self.assertIn("application/rss+xml", request["headers"]["Accept"])
+        self.assertIn("TheJamesGPT", request["headers"]["User-Agent"])
+        self.assertFalse(request["allow_redirects"])
+
     def test_rendered_news_respects_discord_field_limit(self):
         articles = [
             (
@@ -143,6 +168,29 @@ class FinanceTests(unittest.TestCase):
 
         self.assertLessEqual(len(value), _EMBED_FIELD_LIMIT)
         self.assertGreater(len(rendered), 0)
+
+    def test_card_section_uses_two_consolidated_reward_bullets(self):
+        result = FinanceCog._format_card_section(
+            datetime.date(2026, 7, 29),
+            (
+                FreedomQuarter(3, ("Gas Stations", "Target")),
+                FreedomQuarter(4, ("PayPal", "Department Stores")),
+            ),
+            (
+                TransferBonus("Marriott", "50%", datetime.date(2026, 7, 31)),
+                TransferBonus("IHG", "100%", datetime.date(2026, 8, 15)),
+            ),
+        )
+
+        self.assertIsNotNone(result)
+        reward_lines = [line for line in result.splitlines() if line.startswith("•")]
+        self.assertEqual(len(reward_lines), 2)
+        self.assertIn("Gas Stations, Target", reward_lines[0])
+        self.assertIn("Q3 (Jul–Sep, current)", reward_lines[0])
+        self.assertIn("Q4 (Oct–Dec, upcoming)", reward_lines[0])
+        self.assertIn("PayPal, Department Stores", reward_lines[0])
+        self.assertIn("Marriott +50%", reward_lines[1])
+        self.assertIn("IHG +100%", reward_lines[1])
 
 
 if __name__ == "__main__":

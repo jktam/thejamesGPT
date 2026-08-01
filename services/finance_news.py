@@ -212,34 +212,78 @@ def article_tags(article: NewsArticle, watchlist: Iterable[WatchItem]) -> list[s
     return tags
 
 
-def split_ranked_articles(
+def rank_articles(
     articles: Iterable[NewsArticle],
     watchlist: Iterable[WatchItem],
     *,
-    priority_limit: int = 5,
-    general_limit: int = 5,
-) -> tuple[list[tuple[NewsArticle, list[str]]], list[NewsArticle]]:
+    limit: int = 5,
+    watchlist_limit: int = 2,
+    rate_limit: int = 2,
+    source_limit: int = 2,
+) -> list[tuple[NewsArticle, list[str]]]:
     watches = list(watchlist)
-    priority = []
-    general = []
-    general_source_counts: dict[str, int] = {}
+    candidates = [
+        (article, article_tags(article, watches))
+        for article in dedupe_articles(articles)
+    ]
+    selected: list[tuple[NewsArticle, list[str]]] = []
+    selected_fingerprints: set[str] = set()
+    source_counts: dict[str, int] = {}
+    watchlist_count = 0
+    rate_count = 0
 
-    for article in dedupe_articles(articles):
-        tags = article_tags(article, watches)
-        if tags and len(priority) < priority_limit:
-            priority.append((article, tags))
-        elif (
-            len(general) < general_limit
-            and general_source_counts.get(article.source, 0) < 3
-        ):
-            general.append(article)
-            general_source_counts[article.source] = (
-                general_source_counts.get(article.source, 0) + 1
+    def add_candidates(kind: str, *, enforce_source_limit: bool = True) -> None:
+        nonlocal watchlist_count, rate_count
+        ordered_candidates = candidates
+        if kind == "rates":
+            ordered_candidates = sorted(
+                candidates,
+                key=lambda item: (
+                    0
+                    if item[0].source == "Federal Reserve"
+                    else 1
+                    if re.search(r"\b(?:fed|fomc|federal reserve)\b", item[0].title, re.I)
+                    else 2
+                ),
             )
-        if len(priority) >= priority_limit and len(general) >= general_limit:
-            break
 
-    return priority, general
+        for article, tags in ordered_candidates:
+            if len(selected) >= limit:
+                return
+            if article.fingerprint in selected_fingerprints:
+                continue
+
+            has_watchlist_tag = any(tag != "RATES" for tag in tags)
+            has_rate_tag = "RATES" in tags
+            if kind == "watchlist" and (
+                not has_watchlist_tag or watchlist_count >= watchlist_limit
+            ):
+                continue
+            if kind == "rates" and (not has_rate_tag or rate_count >= rate_limit):
+                continue
+            if kind == "general" and (
+                (has_watchlist_tag and watchlist_count >= watchlist_limit)
+                or (has_rate_tag and rate_count >= rate_limit)
+            ):
+                continue
+            if (
+                enforce_source_limit
+                and source_counts.get(article.source, 0) >= source_limit
+            ):
+                continue
+
+            selected.append((article, tags))
+            selected_fingerprints.add(article.fingerprint)
+            source_counts[article.source] = source_counts.get(article.source, 0) + 1
+            watchlist_count += int(has_watchlist_tag)
+            rate_count += int(has_rate_tag)
+
+    add_candidates("watchlist")
+    add_candidates("rates")
+    add_candidates("general")
+    # Prefer publisher variety, but do not leave empty slots when coverage is thin.
+    add_candidates("general", enforce_source_limit=False)
+    return selected
 
 
 def format_article_age(
