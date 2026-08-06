@@ -14,6 +14,7 @@ from services.finance_store import WatchItem
 
 NEWS_MAX_AGE_HOURS = 72
 NEWS_TITLE_LIMIT = 120
+EARNINGS_MAX_AGE_HOURS = 24
 
 _RATE_NEWS_TERMS = (
     "rate cut",
@@ -31,6 +32,69 @@ _RATE_NEWS_TERMS = (
     "policy rate",
     "basis point",
     "dot plot",
+)
+_EARNINGS_RESULT_TERMS = (
+    "beats estimates",
+    "beat estimates",
+    "beats expectations",
+    "beat expectations",
+    "tops estimates",
+    "surpasses estimates",
+    "misses estimates",
+    "missed estimates",
+    "misses expectations",
+    "missed expectations",
+    "falls short",
+    "earnings beat",
+    "earnings miss",
+    "quarterly earnings",
+    "quarterly results",
+    "reports earnings",
+    "reports profit",
+    "reports revenue",
+    "raises guidance",
+    "raised guidance",
+    "lifts guidance",
+    "cuts guidance",
+    "cut guidance",
+    "slashes guidance",
+    "lowers guidance",
+    "withdraws guidance",
+    "first results",
+)
+_EARNINGS_PREVIEW_TERMS = (
+    "ahead of earnings",
+    "earnings preview",
+    "set to report",
+    "will report",
+    "reports after the bell",
+    "reports before the bell",
+    "what to expect",
+)
+_MARKET_MOVING_COMPANIES = {
+    "AAPL": ("apple",),
+    "AMZN": ("amazon",),
+    "AVGO": ("broadcom",),
+    "GOOGL": ("alphabet", "google"),
+    "JPM": ("jpmorgan", "jp morgan"),
+    "META": ("meta", "facebook"),
+    "MSFT": ("microsoft",),
+    "NVDA": ("nvidia",),
+    "TSLA": ("tesla",),
+    "WMT": ("walmart",),
+}
+_EARNINGS_NEWS_SOURCES = {
+    "BBC Business",
+    "CNBC Finance",
+    "NYT Business",
+}
+_MATERIAL_RESULT_PATTERN = re.compile(
+    r"(?:"
+    r"\b(?:profit|revenue|sales)\b.{0,50}"
+    r"\b(?:beats?|falls?|grows?|highest|jumps?|lowest|rises?|slows?|surges?)\b"
+    r"|\b(?:record|higher|lower)\b.{0,30}\b(?:profit|revenue|sales)\b"
+    r")",
+    re.IGNORECASE,
 )
 _TRACKING_QUERY_KEYS = {
     "cid",
@@ -184,6 +248,30 @@ def dedupe_articles(articles: Iterable[NewsArticle]) -> list[NewsArticle]:
     return result
 
 
+def _title_has_symbol(title: str, symbol: str) -> bool:
+    normalized_symbol = symbol.lower()
+    if len(normalized_symbol) == 1:
+        return f"${normalized_symbol}" in title
+    return bool(
+        re.search(
+            rf"(?<![a-z0-9])\$?{re.escape(normalized_symbol)}(?![a-z0-9])",
+            title,
+        )
+    )
+
+
+def _title_has_company(title: str, names: Iterable[str]) -> bool:
+    normalized_title = title.replace("’", "'").replace("‘", "'").lower()
+    for name in names:
+        normalized_name = name.replace("’", "'").replace("‘", "'").lower()
+        if re.search(
+            rf"(?<![a-z0-9]){re.escape(normalized_name)}(?![a-z0-9])",
+            normalized_title,
+        ):
+            return True
+    return False
+
+
 def article_tags(article: NewsArticle, watchlist: Iterable[WatchItem]) -> list[str]:
     title_lower = article.title.lower()
     tags = []
@@ -194,22 +282,77 @@ def article_tags(article: NewsArticle, watchlist: Iterable[WatchItem]) -> list[s
         tags.append("RATES")
 
     for item in watchlist:
-        symbol_pattern = (
-            rf"(?<![a-z0-9])\$?{re.escape(item.symbol.lower())}(?![a-z0-9])"
+        symbol_matches = _title_has_symbol(title_lower, item.symbol)
+        company_matches = bool(
+            item.company_name
+            and _title_has_company(title_lower, (item.company_name,))
         )
-        symbol_matches = bool(re.search(symbol_pattern, title_lower))
-        if len(item.symbol) == 1:
-            symbol_matches = f"${item.symbol.lower()}" in title_lower
-        company_matches = False
-        if item.company_name:
-            company_pattern = (
-                rf"(?<![a-z0-9]){re.escape(item.company_name.lower())}(?![a-z0-9])"
-            )
-            company_matches = bool(re.search(company_pattern, title_lower))
         if symbol_matches or company_matches:
             tags.append(item.symbol)
 
     return tags
+
+
+def rank_earnings_articles(
+    articles: Iterable[NewsArticle],
+    watchlist: Iterable[WatchItem],
+    *,
+    now: datetime.datetime | None = None,
+    limit: int = 2,
+) -> list[tuple[NewsArticle, list[str]]]:
+    current = (now or datetime.datetime.now(datetime.timezone.utc)).astimezone(
+        datetime.timezone.utc
+    )
+    cutoff = current - datetime.timedelta(hours=EARNINGS_MAX_AGE_HOURS)
+    watches = list(watchlist)
+    candidates = []
+
+    for article in dedupe_articles(articles):
+        if not cutoff <= article.published_at <= current + datetime.timedelta(minutes=5):
+            continue
+        title = article.title.lower()
+        if any(term in title for term in _EARNINGS_PREVIEW_TERMS):
+            continue
+        if not (
+            any(term in title for term in _EARNINGS_RESULT_TERMS)
+            or _MATERIAL_RESULT_PATTERN.search(title)
+        ):
+            continue
+
+        watch_symbols = [
+            item.symbol
+            for item in watches
+            if _title_has_symbol(title, item.symbol)
+            or (
+                bool(item.company_name)
+                and _title_has_company(title, (item.company_name,))
+            )
+        ]
+        major_symbols = [
+            symbol
+            for symbol, names in _MARKET_MOVING_COMPANIES.items()
+            if _title_has_company(title, names)
+        ]
+        if (
+            not watch_symbols
+            and not major_symbols
+            and article.source not in _EARNINGS_NEWS_SOURCES
+        ):
+            continue
+
+        symbols = watch_symbols or major_symbols
+        tags = (
+            [symbols[0], "WATCHLIST"]
+            if watch_symbols
+            else [symbols[0]]
+            if symbols
+            else []
+        )
+        priority = 0 if watch_symbols else 1 if major_symbols else 2
+        candidates.append((article, tags, priority))
+
+    candidates.sort(key=lambda item: (item[2], -item[0].published_at.timestamp()))
+    return [(article, tags) for article, tags, _ in candidates[:limit]]
 
 
 def rank_articles(

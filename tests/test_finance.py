@@ -4,7 +4,7 @@ import asyncio
 import datetime
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from cogs.finance import (
     _EMBED_FIELD_LIMIT,
@@ -191,6 +191,30 @@ class FinanceTests(unittest.TestCase):
         self.assertIn("PayPal, Department Stores", reward_lines[0])
         self.assertIn("Marriott +50%", reward_lines[1])
         self.assertIn("IHG +100%", reward_lines[1])
+
+    def test_material_earnings_can_trigger_alert_by_itself(self):
+        cog, _ = build_cog({})
+        cog.finance_store = SimpleNamespace(list_watchlist=lambda guild_id: [])
+        article = NewsArticle(
+            source="NYT Business",
+            title="Apple beats estimates and raises guidance",
+            url="https://example.com/apple-results",
+            published_at=datetime.datetime.now(datetime.timezone.utc)
+            - datetime.timedelta(hours=1),
+        )
+
+        with (
+            patch.object(cog, "_check_econ_tomorrow", new=AsyncMock(return_value=[])),
+            patch.object(cog, "_check_spy_daily", new=AsyncMock(return_value=None)),
+            patch.object(cog, "_check_btc_24h", new=AsyncMock(return_value=None)),
+            patch.object(cog, "_fetch_news", new=AsyncMock(return_value=[article])),
+        ):
+            result = asyncio.run(cog._build_alert_result(guild_id=123))
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result.embed.fields[0].name, "💼 Earnings")
+        self.assertIn("Apple beats estimates", result.embed.fields[0].value)
+        self.assertEqual(result.news_fingerprints, (article.fingerprint,))
 
 
 if __name__ == "__main__":

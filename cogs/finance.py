@@ -29,6 +29,7 @@ from services.finance_news import (
     format_article_age,
     parse_feed,
     rank_articles,
+    rank_earnings_articles,
     safe_markdown_text,
 )
 from services.finance_store import (
@@ -85,6 +86,12 @@ class FinanceAPIError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class DigestResult:
+    embed: discord.Embed
+    news_fingerprints: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class AlertResult:
     embed: discord.Embed
     news_fingerprints: tuple[str, ...]
 
@@ -436,19 +443,47 @@ class FinanceCog(commands.Cog):
         channel = self._get_finance_channel()
         if not channel:
             return
-        embed = await self._build_alert_embed()
-        if embed:
-            await channel.send(embed=embed)
+        guild_id = channel.guild.id if getattr(channel, "guild", None) else None
+        result = await self._build_alert_result(
+            guild_id=guild_id,
+            scope_id=channel.id,
+            exclude_seen=True,
+        )
+        if result:
+            await channel.send(embed=result.embed)
+            self.finance_store.mark_headlines_seen(
+                channel.id,
+                result.news_fingerprints,
+            )
 
-    async def _build_alert_embed(self) -> discord.Embed | None:
+    async def _build_alert_embed(
+        self,
+        guild_id: int | None = None,
+    ) -> discord.Embed | None:
+        result = await self._build_alert_result(guild_id=guild_id)
+        return result.embed if result else None
+
+    async def _build_alert_result(
+        self,
+        *,
+        guild_id: int | None,
+        scope_id: int | None = None,
+        exclude_seen: bool = False,
+    ) -> AlertResult | None:
         settings = self.bot.settings
+        watchlist = (
+            self.finance_store.list_watchlist(guild_id)
+            if guild_id is not None
+            else []
+        )
 
         econ_task = self._check_econ_tomorrow() if settings.finnhub_api_key else asyncio.sleep(0)
         spy_task = self._check_spy_daily() if settings.finnhub_api_key else asyncio.sleep(0)
         btc_task = self._check_btc_24h()
+        news_task = self._fetch_news()
 
-        econ_tomorrow, spy_alert, btc_alert = await asyncio.gather(
-            econ_task, spy_task, btc_task, return_exceptions=True
+        econ_tomorrow, spy_alert, btc_alert, news = await asyncio.gather(
+            econ_task, spy_task, btc_task, news_task, return_exceptions=True
         )
 
         if isinstance(econ_tomorrow, Exception):
@@ -460,6 +495,20 @@ class FinanceCog(commands.Cog):
         if isinstance(btc_alert, Exception):
             logger.error("BTC check failed: %s", btc_alert)
             btc_alert = None
+        if isinstance(news, Exception):
+            logger.error("Earnings news check failed: %s", news)
+            news = []
+
+        articles = news if isinstance(news, list) else []
+        if exclude_seen and scope_id is not None:
+            unseen = self.finance_store.unseen_fingerprints(
+                scope_id,
+                (article.fingerprint for article in articles),
+            )
+            articles = [
+                article for article in articles if article.fingerprint in unseen
+            ]
+        earnings = rank_earnings_articles(articles, watchlist)
 
         lines = []
         if isinstance(econ_tomorrow, list):
@@ -470,7 +519,7 @@ class FinanceCog(commands.Cog):
         if btc_alert:
             lines.append(btc_alert)
 
-        if not lines:
+        if not lines and not earnings:
             return None
 
         now = datetime.datetime.now(_MARKET_TZ)
@@ -479,8 +528,22 @@ class FinanceCog(commands.Cog):
             description=now.strftime("%A, %B %d"),
             color=0xE67E22,
         )
-        embed.add_field(name="​", value="\n".join(lines), inline=False)
-        return embed
+        if lines:
+            embed.add_field(name="​", value="\n".join(lines), inline=False)
+        if earnings:
+            value, rendered = self._fit_news_items(earnings)
+            if value:
+                embed.add_field(name="💼 Earnings", value=value, inline=False)
+            else:
+                rendered = []
+        else:
+            rendered = []
+        return AlertResult(
+            embed=embed,
+            news_fingerprints=tuple(
+                article.fingerprint for article in rendered
+            ),
+        )
 
     async def _check_econ_tomorrow(self) -> list[str]:
         tomorrow = _market_today() + datetime.timedelta(days=1)

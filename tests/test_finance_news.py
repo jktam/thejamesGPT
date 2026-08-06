@@ -11,6 +11,7 @@ from services.finance_news import (
     dedupe_articles,
     parse_feed,
     rank_articles,
+    rank_earnings_articles,
 )
 from services.finance_store import FinanceStore, WatchItem
 
@@ -177,6 +178,90 @@ class FinanceNewsTests(unittest.TestCase):
         ranked = rank_articles(articles, [], limit=1)
 
         self.assertEqual(ranked[0][0].source, "Federal Reserve")
+
+    def test_earnings_prioritizes_watchlist_then_major_companies(self):
+        articles = [
+            NewsArticle(
+                source="CNBC Finance",
+                title="Apple beats estimates and raises guidance",
+                url="https://example.com/apple",
+                published_at=NOW - datetime.timedelta(hours=1),
+            ),
+            NewsArticle(
+                source="CNBC Finance",
+                title="Palantir reports earnings and lifts guidance",
+                url="https://example.com/palantir",
+                published_at=NOW - datetime.timedelta(hours=2),
+            ),
+        ]
+        watchlist = [WatchItem(symbol="PLTR", company_name="Palantir")]
+
+        ranked = rank_earnings_articles(
+            articles,
+            watchlist,
+            now=NOW,
+        )
+
+        self.assertEqual(ranked[0][1], ["PLTR", "WATCHLIST"])
+        self.assertEqual(ranked[1][1], ["AAPL"])
+
+    def test_earnings_rejects_previews_stale_and_non_major_companies(self):
+        articles = [
+            NewsArticle(
+                source="CNBC Finance",
+                title="What to expect from Nvidia quarterly earnings",
+                url="https://example.com/preview",
+                published_at=NOW - datetime.timedelta(hours=1),
+            ),
+            NewsArticle(
+                source="CNBC Finance",
+                title="Microsoft beats estimates",
+                url="https://example.com/stale",
+                published_at=NOW - datetime.timedelta(hours=25),
+            ),
+            NewsArticle(
+                source="Unknown Blog",
+                title="Small private company reports earnings",
+                url="https://example.com/private",
+                published_at=NOW - datetime.timedelta(hours=1),
+            ),
+        ]
+
+        ranked = rank_earnings_articles(articles, [], now=NOW)
+
+        self.assertEqual(ranked, [])
+
+    def test_earnings_watchlist_matching_normalizes_curly_apostrophes(self):
+        article = NewsArticle(
+            source="NYT Business",
+            title="McDonald’s sales rise after quarterly results",
+            url="https://example.com/mcdonalds",
+            published_at=NOW - datetime.timedelta(hours=1),
+        )
+
+        ranked = rank_earnings_articles(
+            [article],
+            [WatchItem(symbol="MCD", company_name="McDonald's")],
+            now=NOW,
+        )
+
+        self.assertEqual(ranked[0][1], ["MCD", "WATCHLIST"])
+
+    def test_earnings_watchlist_matches_ticker_when_company_name_is_present(self):
+        article = NewsArticle(
+            source="CNBC Finance",
+            title="$PLTR beats expectations and raises guidance",
+            url="https://example.com/palantir",
+            published_at=NOW - datetime.timedelta(hours=1),
+        )
+
+        ranked = rank_earnings_articles(
+            [article],
+            [WatchItem(symbol="PLTR", company_name="Palantir")],
+            now=NOW,
+        )
+
+        self.assertEqual(ranked[0][1], ["PLTR", "WATCHLIST"])
 
 
 class FinanceStoreTests(unittest.TestCase):

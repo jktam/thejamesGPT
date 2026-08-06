@@ -33,7 +33,7 @@ Most commands support `visibility: public` or `visibility: private`.
 - `/watch add` - Add a ticker and optional company name to the shared server watchlist
 - `/watch remove` - Remove a ticker from the watchlist
 - `/watch list` - Show the server watchlist
-- Posts a Friday digest and Mon–Thu threshold alerts at 5 PM Eastern when `FINANCE_CHANNEL_ID` is set and the bot is online
+- Posts a Friday digest and Mon–Thu market, economic-event, and material-earnings alerts at 5 PM Eastern when `FINANCE_CHANNEL_ID` is set and the bot is online
 
 ## Notes
 
