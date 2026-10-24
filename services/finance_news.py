@@ -15,6 +15,7 @@ from services.finance_store import WatchItem
 NEWS_MAX_AGE_HOURS = 72
 NEWS_TITLE_LIMIT = 120
 EARNINGS_MAX_AGE_HOURS = 24
+_MAX_ARTICLES_PER_PUBLISHER = 2
 
 _RATE_NEWS_TERMS = (
     "rate cut",
@@ -77,16 +78,47 @@ _MARKET_MOVING_COMPANIES = {
     "AVGO": ("broadcom",),
     "GOOGL": ("alphabet", "google"),
     "JPM": ("jpmorgan", "jp morgan"),
-    "META": ("meta", "facebook"),
+    "META": ("meta platforms", "facebook"),
     "MSFT": ("microsoft",),
     "NVDA": ("nvidia",),
     "TSLA": ("tesla",),
     "WMT": ("walmart",),
 }
+_COMPANY_ALIASES = {
+    **_MARKET_MOVING_COMPANIES,
+    "AMD": ("advanced micro devices",),
+    "COST": ("costco",),
+    "CRM": ("salesforce",),
+    "GOOG": _MARKET_MOVING_COMPANIES["GOOGL"],
+    "HOOD": ("robinhood",),
+    "NOW": ("servicenow",),
+    "PYPL": ("paypal",),
+    "SNOW": ("snowflake",),
+}
+# These symbols are also ordinary words, even in an all-caps headline.
+_AMBIGUOUS_SYMBOLS = frozenset(
+    {
+        "AI", "ALL", "ARE", "ARM", "BE", "CAN", "CAT", "COST", "DASH",
+        "FOR", "GO", "HAS", "HOOD", "IT", "LOVE", "LOW", "META", "NET",
+        "NOW", "ON", "OPEN", "OR", "OUT", "SHOP", "SNOW", "SO", "SPOT",
+        "TEAM", "WELL",
+    }
+)
+_EXCHANGE_PATTERN = r"(?:NASDAQ|NYSE|NYSEARCA|NYSEAMERICAN|AMEX|OTC|OTCMKTS|BATS|TSX|LSE)"
+_PUBLISHER_ALIASES = {
+    "bbc business": "bbc",
+    "bbc news": "bbc",
+    "cnbc finance": "cnbc",
+    "nyt": "new york times",
+    "nyt business": "new york times",
+    "the new york times": "new york times",
+    "wsj": "wall street journal",
+    "the wall street journal": "wall street journal",
+}
 _EARNINGS_NEWS_SOURCES = {
-    "BBC Business",
-    "CNBC Finance",
-    "NYT Business",
+    "bbc",
+    "cnbc",
+    "new york times",
 }
 _MATERIAL_RESULT_PATTERN = re.compile(
     r"(?:"
@@ -132,6 +164,12 @@ def safe_http_url(value) -> str | None:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return None
     return url
+
+
+def canonical_publisher(source: str) -> str:
+    """Resolve exact newsroom aliases without merging related publishers."""
+    normalized = " ".join(source.split()).casefold()
+    return _PUBLISHER_ALIASES.get(normalized, normalized)
 
 
 def canonical_url(url: str) -> str:
@@ -249,27 +287,50 @@ def dedupe_articles(articles: Iterable[NewsArticle]) -> list[NewsArticle]:
 
 
 def _title_has_symbol(title: str, symbol: str) -> bool:
-    normalized_symbol = symbol.lower()
-    if len(normalized_symbol) == 1:
-        return f"${normalized_symbol}" in title
-    return bool(
-        re.search(
-            rf"(?<![a-z0-9])\$?{re.escape(normalized_symbol)}(?![a-z0-9])",
-            title,
-        )
-    )
+    normalized_symbol = symbol.strip().upper()
+    if not normalized_symbol:
+        return False
+    escaped = re.escape(normalized_symbol)
+    if re.search(
+        rf"(?<![\w$])(?:\$|{_EXCHANGE_PATTERN}\s*:\s*){escaped}(?!\w)",
+        title,
+        re.IGNORECASE,
+    ):
+        return True
+    if len(normalized_symbol) == 1 or normalized_symbol in _AMBIGUOUS_SYMBOLS:
+        return False
+    return bool(re.search(rf"(?<![\w$]){escaped}(?!\w)", title))
 
 
 def _title_has_company(title: str, names: Iterable[str]) -> bool:
     normalized_title = title.replace("’", "'").replace("‘", "'").lower()
     for name in names:
-        normalized_name = name.replace("’", "'").replace("‘", "'").lower()
+        normalized_name = name.replace("’", "'").replace("‘", "'").strip().lower()
+        if not normalized_name:
+            continue
         if re.search(
-            rf"(?<![a-z0-9]){re.escape(normalized_name)}(?![a-z0-9])",
+            rf"(?<!\w){re.escape(normalized_name)}(?!\w)",
             normalized_title,
         ):
             return True
     return False
+
+
+def _matches_company(title: str, symbol: str, company_name: str | None = None) -> bool:
+    normalized_symbol = symbol.strip().upper()
+    names = _COMPANY_ALIASES.get(normalized_symbol, ())
+    # A stored ticker masquerading as a company name must not bypass symbol rules.
+    if company_name and company_name.strip().upper() != normalized_symbol:
+        names = (*names, company_name)
+    return (
+        _title_has_symbol(title, normalized_symbol)
+        or _title_has_company(title, names)
+        # The company brand is "Meta"; generic "meta" and bare "META" are ambiguous.
+        or (
+            normalized_symbol == "META"
+            and bool(re.search(r"(?<!\w)Meta(?!\w)", title))
+        )
+    )
 
 
 def article_tags(article: NewsArticle, watchlist: Iterable[WatchItem]) -> list[str]:
@@ -282,12 +343,7 @@ def article_tags(article: NewsArticle, watchlist: Iterable[WatchItem]) -> list[s
         tags.append("RATES")
 
     for item in watchlist:
-        symbol_matches = _title_has_symbol(title_lower, item.symbol)
-        company_matches = bool(
-            item.company_name
-            and _title_has_company(title_lower, (item.company_name,))
-        )
-        if symbol_matches or company_matches:
+        if _matches_company(article.title, item.symbol, item.company_name):
             tags.append(item.symbol)
 
     return tags
@@ -300,6 +356,8 @@ def rank_earnings_articles(
     now: datetime.datetime | None = None,
     limit: int = 2,
 ) -> list[tuple[NewsArticle, list[str]]]:
+    if limit <= 0:
+        return []
     current = (now or datetime.datetime.now(datetime.timezone.utc)).astimezone(
         datetime.timezone.utc
     )
@@ -322,21 +380,18 @@ def rank_earnings_articles(
         watch_symbols = [
             item.symbol
             for item in watches
-            if _title_has_symbol(title, item.symbol)
-            or (
-                bool(item.company_name)
-                and _title_has_company(title, (item.company_name,))
-            )
+            if _matches_company(article.title, item.symbol, item.company_name)
         ]
         major_symbols = [
             symbol
-            for symbol, names in _MARKET_MOVING_COMPANIES.items()
-            if _title_has_company(title, names)
+            for symbol in _MARKET_MOVING_COMPANIES
+            if _matches_company(article.title, symbol)
+            or (symbol == "GOOGL" and _title_has_symbol(article.title, "GOOG"))
         ]
         if (
             not watch_symbols
             and not major_symbols
-            and article.source not in _EARNINGS_NEWS_SOURCES
+            and canonical_publisher(article.source) not in _EARNINGS_NEWS_SOURCES
         ):
             continue
 
@@ -352,7 +407,17 @@ def rank_earnings_articles(
         candidates.append((article, tags, priority))
 
     candidates.sort(key=lambda item: (item[2], -item[0].published_at.timestamp()))
-    return [(article, tags) for article, tags, _ in candidates[:limit]]
+    selected = []
+    source_counts: dict[str, int] = {}
+    for article, tags, _ in candidates:
+        publisher = canonical_publisher(article.source)
+        if source_counts.get(publisher, 0) >= _MAX_ARTICLES_PER_PUBLISHER:
+            continue
+        selected.append((article, tags))
+        source_counts[publisher] = source_counts.get(publisher, 0) + 1
+        if len(selected) >= limit:
+            break
+    return selected
 
 
 def rank_articles(
@@ -364,6 +429,10 @@ def rank_articles(
     rate_limit: int = 2,
     source_limit: int = 2,
 ) -> list[tuple[NewsArticle, list[str]]]:
+    """Select prioritized news without relaxing publisher or category caps."""
+    if limit <= 0:
+        return []
+    source_limit = min(source_limit, _MAX_ARTICLES_PER_PUBLISHER)
     watches = list(watchlist)
     candidates = [
         (article, article_tags(article, watches))
@@ -375,7 +444,7 @@ def rank_articles(
     watchlist_count = 0
     rate_count = 0
 
-    def add_candidates(kind: str, *, enforce_source_limit: bool = True) -> None:
+    def add_candidates(kind: str) -> None:
         nonlocal watchlist_count, rate_count
         ordered_candidates = candidates
         if kind == "rates":
@@ -398,34 +467,28 @@ def rank_articles(
 
             has_watchlist_tag = any(tag != "RATES" for tag in tags)
             has_rate_tag = "RATES" in tags
-            if kind == "watchlist" and (
-                not has_watchlist_tag or watchlist_count >= watchlist_limit
-            ):
+            if kind == "watchlist" and not has_watchlist_tag:
                 continue
-            if kind == "rates" and (not has_rate_tag or rate_count >= rate_limit):
+            if kind == "rates" and not has_rate_tag:
                 continue
-            if kind == "general" and (
+            if (
                 (has_watchlist_tag and watchlist_count >= watchlist_limit)
                 or (has_rate_tag and rate_count >= rate_limit)
             ):
                 continue
-            if (
-                enforce_source_limit
-                and source_counts.get(article.source, 0) >= source_limit
-            ):
+            publisher = canonical_publisher(article.source)
+            if source_counts.get(publisher, 0) >= source_limit:
                 continue
 
             selected.append((article, tags))
             selected_fingerprints.add(article.fingerprint)
-            source_counts[article.source] = source_counts.get(article.source, 0) + 1
+            source_counts[publisher] = source_counts.get(publisher, 0) + 1
             watchlist_count += int(has_watchlist_tag)
             rate_count += int(has_rate_tag)
 
     add_candidates("watchlist")
     add_candidates("rates")
     add_candidates("general")
-    # Prefer publisher variety, but do not leave empty slots when coverage is thin.
-    add_candidates("general", enforce_source_limit=False)
     return selected
 
 

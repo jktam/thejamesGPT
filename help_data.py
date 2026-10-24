@@ -20,7 +20,8 @@ HELP_SECTIONS = {
     ],
     "Finance": [
         "/finance — Show the latest finance digest.",
-        "/watch add — Track a ticker in finance news.",
+        "/finance_status — Managers: check finance scheduling and source health.",
+        "/watch add — Track a ticker's news and price moves.",
         "/watch remove — Stop tracking a ticker.",
         "/watch list — Show the server watchlist.",
     ],

@@ -11,6 +11,8 @@ from typing import Any
 import xml.etree.ElementTree as ET
 from zoneinfo import ZoneInfo
 
+from services.bounded_http import read_bounded
+
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
@@ -28,6 +30,8 @@ from services.finance_news import (
     NewsArticle,
     format_article_age,
     parse_feed,
+    safe_http_url,
+    article_tags,
     rank_articles,
     rank_earnings_articles,
     safe_markdown_text,
@@ -49,6 +53,7 @@ _COINGECKO_MARKETS_URL = "https://api.coingecko.com/api/v3/coins/markets"
 _COINGECKO_PRICE_URL = "https://api.coingecko.com/api/v3/simple/price"
 _FINNHUB_QUOTE_URL = "https://finnhub.io/api/v1/quote"
 _FINNHUB_ECON_URL = "https://finnhub.io/api/v1/calendar/economic"
+_FINNHUB_NEWS_URL = "https://finnhub.io/api/v1/company-news"
 _NEWS_FEEDS = (
     ("CNBC Finance", "https://www.cnbc.com/id/10000664/device/rss/rss.html"),
     ("NYT Business", "https://rss.nytimes.com/services/xml/rss/nyt/Business.xml"),
@@ -69,13 +74,13 @@ _STOCK_SYMBOLS = {
 # Daily alert thresholds
 _SPY_ALERT_PCT = 1.5
 _BTC_ALERT_PCT = 5.0
+_WATCH_ALERT_PCT = 3.0
 _DIGEST_CACHE_SECONDS = 5 * 60
 _MAX_CRYPTO_AGE_SECONDS = 60 * 60
 _MAX_WEEKLY_DATA_AGE_DAYS = 10
 _MAX_RSS_BYTES = 512 * 1024
 _MAX_REWARDS_PAGE_BYTES = 1024 * 1024
 _EMBED_FIELD_LIMIT = 1024
-_REWARDS_FOOTER_RESERVE = 300
 _SYMBOL_PATTERN = re.compile(r"^[A-Z][A-Z0-9.-]{0,9}$")
 _MAX_COMPANY_NAME_LENGTH = 80
 
@@ -94,6 +99,14 @@ class DigestResult:
 class AlertResult:
     embed: discord.Embed
     news_fingerprints: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class StockQuote:
+    symbol: str
+    price: float
+    change_pct: float
+    date: datetime.date
 
 
 def _market_today() -> datetime.date:
@@ -126,6 +139,11 @@ class FinanceCog(commands.Cog):
         self.finance_store = FinanceStore()
         self._digest_cache: dict[int | None, tuple[float, DigestResult]] = {}
         self._digest_lock = asyncio.Lock()
+        self._provider_cache = {}
+        self._finnhub_lock = asyncio.Lock()
+        self._finnhub_next_request = 0.0
+        self._source_status = {}
+        self._last_daily_status = "No weekday check since startup"
         self.weekly_digest.start()
         self.daily_check.start()
 
@@ -169,6 +187,7 @@ class FinanceCog(commands.Cog):
         try:
             await self._post_daily_alerts()
         except Exception:
+            self._last_daily_status = "Weekday check failed; see service logs"
             logger.exception("Scheduled daily finance check failed")
 
     @daily_check.before_loop
@@ -198,6 +217,17 @@ class FinanceCog(commands.Cog):
         session = self.bot.http_session
         if session is None:
             raise FinanceAPIError("HTTP session is not initialized")
+
+        if provider == "Finnhub":
+            # Keep all quote, company-news and calendar requests below 60/minute.
+            if not hasattr(self, "_finnhub_lock"):
+                self._finnhub_lock = asyncio.Lock()
+                self._finnhub_next_request = 0.0
+            async with self._finnhub_lock:
+                delay = self._finnhub_next_request - monotonic()
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                self._finnhub_next_request = monotonic() + 1.1
 
         try:
             async with session.get(
@@ -306,15 +336,17 @@ class FinanceCog(commands.Cog):
         )
 
         market_task = self._fetch_market() if settings.alpha_vantage_api_key else asyncio.sleep(0)
-        news_task = self._fetch_news()
+        news_task = self._fetch_all_news(watchlist)
         econ_task = self._fetch_econ_calendar(days=7) if settings.finnhub_api_key else asyncio.sleep(0)
         card_task = self._fetch_card_section()
+        watch_task = self._fetch_watch_quotes(watchlist)
 
-        market, news, econ_events, card_text = await asyncio.gather(
+        market, news, econ_events, card_text, watch_quotes = await asyncio.gather(
             market_task,
             news_task,
             econ_task,
             card_task,
+            watch_task,
             return_exceptions=True,
         )
 
@@ -390,14 +422,16 @@ class FinanceCog(commands.Cog):
                 embed.add_field(name="📰 News Status", value=status, inline=False)
 
         if watchlist:
-            embed.add_field(
-                name="👀 Server Watchlist",
-                value=", ".join(f"`{item.symbol}`" for item in watchlist),
-                inline=False,
-            )
+            self._add_watch_performance(embed, watchlist, watch_quotes)
 
         if isinstance(card_text, str) and card_text:
             embed.add_field(name="💳 Chase Rewards", value=card_text, inline=False)
+        else:
+            embed.add_field(name="💳 Chase Rewards", value=self._rewards_unavailable(), inline=False)
+
+        coverage = self._news_coverage_note()
+        if coverage:
+            embed.add_field(name="News Coverage", value=coverage, inline=False)
 
         embed.set_footer(
             text="Data may be delayed · Informational only, not investment advice"
@@ -439,6 +473,118 @@ class FinanceCog(commands.Cog):
 
     # ------------------------------------------------------------------ daily alert
 
+    def _set_source_status(self, source: str, status: str) -> None:
+        if not hasattr(self, "_source_status"):
+            self._source_status = {}
+        self._source_status.pop(source, None)
+        self._source_status[source] = status
+        if len(self._source_status) > 80:
+            del self._source_status[next(iter(self._source_status))]
+        logger.info("Finance source %s: %s", source, status)
+
+    def _news_coverage_note(self) -> str:
+        statuses = getattr(self, "_source_status", {})
+        failures = [
+            f"{source}: {statuses[source]}"
+            for source, _ in _NEWS_FEEDS
+            if source in statuses and not statuses[source].startswith("OK")
+        ]
+        return safe_markdown_text("; ".join(failures), 300)
+
+    async def _fetch_stock_quote(self, symbol: str) -> StockQuote:
+        cache = getattr(self, "_provider_cache", None)
+        if cache is None:
+            self._provider_cache = cache = {}
+        key = ("quote", symbol, _market_today())
+        cached = cache.get(key)
+        if cached and monotonic() - cached[0] < _DIGEST_CACHE_SECONDS:
+            return cached[1]
+        data = await self._request_json(
+            "Finnhub", _FINNHUB_QUOTE_URL,
+            params={"symbol": symbol}, headers=self._finnhub_headers(),
+        )
+        if not isinstance(data, dict):
+            raise FinanceAPIError("Invalid stock quote payload")
+        price = _finite_float(data.get("c"), field="quote close")
+        previous = _finite_float(data.get("pc"), field="quote previous close")
+        timestamp = _finite_float(data.get("t"), field="quote timestamp")
+        try:
+            as_of = datetime.datetime.fromtimestamp(timestamp, datetime.timezone.utc)
+        except (ValueError, OverflowError, OSError) as exc:
+            raise FinanceAPIError("Invalid quote date") from exc
+        if (
+            price <= 0 or previous <= 0
+            or as_of.astimezone(_MARKET_TZ).date() != _market_today()
+            or as_of > datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=5)
+        ):
+            raise FinanceAPIError("Stale or invalid quote")
+        quote = StockQuote(symbol, price, (price / previous - 1) * 100, as_of.astimezone(_MARKET_TZ).date())
+        # Only persist prices timestamped at/after the regular close.
+        if as_of.astimezone(_MARKET_TZ).hour >= 16 and hasattr(self, "finance_store"):
+            self.finance_store.record_close(symbol, quote.date, quote.price)
+        cache[key] = (monotonic(), quote)
+        if len(cache) > 300:
+            for old_key in list(cache):
+                if monotonic() - cache[old_key][0] >= _DIGEST_CACHE_SECONDS:
+                    del cache[old_key]
+        return quote
+
+    async def _fetch_watch_quotes(self, watchlist) -> dict[str, StockQuote | None]:
+        if not watchlist:
+            return {}
+        if not self.bot.settings.finnhub_api_key:
+            self._set_source_status("Watch prices", "FINNHUB_API_KEY missing")
+            return {item.symbol: None for item in watchlist}
+        semaphore = asyncio.Semaphore(3)
+
+        async def fetch(item):
+            async with semaphore:
+                try:
+                    return item.symbol, await self._fetch_stock_quote(item.symbol)
+                except Exception as exc:
+                    logger.warning("Quote unavailable for %s: %s", item.symbol, type(exc).__name__)
+                    return item.symbol, None
+
+        results = dict(await asyncio.gather(*(fetch(item) for item in watchlist)))
+        success = sum(value is not None for value in results.values())
+        self._set_source_status("Watch prices", f"{success}/{len(results)} current quotes")
+        return results
+
+    @staticmethod
+    def _add_lines(embed: discord.Embed, title: str, lines: list[str]) -> None:
+        value = ""
+        for line in lines:
+            if len(embed) + len(title) + len(value) + len(line) + 100 > 5900:
+                if value:
+                    embed.add_field(name=title, value=value, inline=False)
+                return
+            if len(value) + len(line) + 1 > _EMBED_FIELD_LIMIT:
+                embed.add_field(name=title, value=value, inline=False)
+                value = ""
+            value += ("\n" if value else "") + line
+        if value:
+            embed.add_field(name=title, value=value, inline=False)
+
+    def _add_watch_performance(self, embed, watchlist, quotes) -> None:
+        quotes = quotes if isinstance(quotes, dict) else {}
+        lines = []
+        pending = False
+        for item in watchlist:
+            quote = quotes.get(item.symbol)
+            if quote is None:
+                lines.append(f"`{item.symbol}`: current quote unavailable")
+                continue
+            baseline = self.finance_store.previous_week_close(item.symbol, quote.date)
+            week = "week pending"
+            if baseline:
+                week = f"week {(quote.price / baseline[1] - 1) * 100:+.2f}%"
+            else:
+                pending = True
+            lines.append(f"`{item.symbol}` ${quote.price:,.2f} | day {quote.change_pct:+.2f}% | {week}")
+        if pending:
+            lines.append("Weekly change starts after a previous-week close has been saved.")
+        self._add_lines(embed, "Watchlist Performance", lines)
+
     async def _post_daily_alerts(self) -> None:
         channel = self._get_finance_channel()
         if not channel:
@@ -455,6 +601,11 @@ class FinanceCog(commands.Cog):
                 channel.id,
                 result.news_fingerprints,
             )
+        self._last_daily_status = (
+            f"{datetime.datetime.now(_MARKET_TZ).isoformat(timespec='minutes')}: "
+            + ("alert posted" if result else "checked; no qualifying triggers")
+        )
+        logger.info("Weekday finance check: %s", self._last_daily_status)
 
     async def _build_alert_embed(
         self,
@@ -480,11 +631,18 @@ class FinanceCog(commands.Cog):
         econ_task = self._check_econ_tomorrow() if settings.finnhub_api_key else asyncio.sleep(0)
         spy_task = self._check_spy_daily() if settings.finnhub_api_key else asyncio.sleep(0)
         btc_task = self._check_btc_24h()
-        news_task = self._fetch_news()
+        news_task = self._fetch_all_news(watchlist)
+        watch_task = self._fetch_watch_quotes(watchlist)
 
-        econ_tomorrow, spy_alert, btc_alert, news = await asyncio.gather(
-            econ_task, spy_task, btc_task, news_task, return_exceptions=True
+        econ_tomorrow, spy_alert, btc_alert, news, quotes = await asyncio.gather(
+            econ_task, spy_task, btc_task, news_task, watch_task, return_exceptions=True
         )
+
+        for name, result in (("Economic alerts", econ_tomorrow), ("SPY alerts", spy_alert), ("Bitcoin alerts", btc_alert)):
+            status = f"failed ({type(result).__name__})" if isinstance(result, Exception) else "OK: checked"
+            if name != "Bitcoin alerts" and not settings.finnhub_api_key:
+                status = "FINNHUB_API_KEY missing"
+            self._set_source_status(name, status)
 
         if isinstance(econ_tomorrow, Exception):
             logger.error("Econ tomorrow check failed: %s", econ_tomorrow)
@@ -509,6 +667,14 @@ class FinanceCog(commands.Cog):
                 article for article in articles if article.fingerprint in unseen
             ]
         earnings = rank_earnings_articles(articles, watchlist)
+        quote_map = quotes if isinstance(quotes, dict) else {}
+        moves = [q for q in quote_map.values() if q and abs(q.change_pct) >= _WATCH_ALERT_PCT]
+        moves.sort(key=lambda q: abs(q.change_pct), reverse=True)
+        move_keys = {q.symbol: f"price:{q.symbol}:{q.date.isoformat()}" for q in moves}
+        if exclude_seen and scope_id is not None:
+            unseen_moves = self.finance_store.unseen_fingerprints(scope_id, move_keys.values())
+            moves = [q for q in moves if move_keys[q.symbol] in unseen_moves]
+        unavailable = [item.symbol for item in watchlist if quote_map.get(item.symbol) is None]
 
         lines = []
         if isinstance(econ_tomorrow, list):
@@ -519,7 +685,8 @@ class FinanceCog(commands.Cog):
         if btc_alert:
             lines.append(btc_alert)
 
-        if not lines and not earnings:
+        earnings_value, rendered = self._fit_news_items(earnings)
+        if not lines and not earnings_value and not moves and not unavailable:
             return None
 
         now = datetime.datetime.now(_MARKET_TZ)
@@ -530,19 +697,19 @@ class FinanceCog(commands.Cog):
         )
         if lines:
             embed.add_field(name="​", value="\n".join(lines), inline=False)
-        if earnings:
-            value, rendered = self._fit_news_items(earnings)
-            if value:
-                embed.add_field(name="💼 Earnings", value=value, inline=False)
-            else:
-                rendered = []
-        else:
-            rendered = []
+        if moves:
+            self._add_lines(embed, "Watchlist Moves (3% or more)", [
+                f"`{q.symbol}` {q.change_pct:+.2f}% today | ${q.price:,.2f} | {q.date.isoformat()}"
+                for q in moves
+            ])
+        if unavailable:
+            embed.add_field(name="Price Coverage", value="Current quotes unavailable: " + ", ".join(unavailable), inline=False)
+        if earnings_value:
+            embed.add_field(name="💼 Earnings", value=earnings_value, inline=False)
         return AlertResult(
             embed=embed,
-            news_fingerprints=tuple(
-                article.fingerprint for article in rendered
-            ),
+            news_fingerprints=tuple(article.fingerprint for article in rendered)
+            + tuple(move_keys[q.symbol] for q in moves),
         )
 
     async def _check_econ_tomorrow(self) -> list[str]:
@@ -746,19 +913,19 @@ class FinanceCog(commands.Cog):
             ) as resp:
                 if resp.status != 200:
                     logger.warning("%s RSS returned HTTP %d", source, resp.status)
+                    self._set_source_status(source, f"HTTP {resp.status}")
                     return []
-                raw = await resp.content.read(_MAX_RSS_BYTES + 1)
-                if len(raw) > _MAX_RSS_BYTES:
-                    logger.warning("%s RSS response exceeded size limit", source)
-                    return []
-        except Exception:
-            logger.exception("%s RSS fetch failed", source)
+                raw = await read_bounded(resp.content, _MAX_RSS_BYTES)
+        except Exception as exc:
+            self._set_source_status(source, f"fetch failed ({type(exc).__name__})")
             return []
 
         try:
-            return parse_feed(raw, source=source)
+            articles = parse_feed(raw, source=source)
+            self._set_source_status(source, f"OK: {len(articles)} fresh" if articles else "no fresh articles")
+            return articles
         except ET.ParseError:
-            logger.warning("%s RSS returned invalid XML", source)
+            self._set_source_status(source, "invalid XML")
             return []
 
     async def _fetch_news(self) -> list[NewsArticle]:
@@ -776,6 +943,62 @@ class FinanceCog(commands.Cog):
                 continue
             articles.extend(result)
         return articles
+
+    async def _fetch_company_news(self, item) -> list[NewsArticle]:
+        cache = getattr(self, "_provider_cache", None)
+        if cache is None:
+            self._provider_cache = cache = {}
+        today = _market_today()
+        key = ("news", item.symbol, today)
+        cached = cache.get(key)
+        if cached and monotonic() - cached[0] < _DIGEST_CACHE_SECONDS:
+            data = cached[1]
+        else:
+            data = await self._request_json(
+                "Finnhub", _FINNHUB_NEWS_URL,
+                params={"symbol": item.symbol, "from": (today - datetime.timedelta(days=7)).isoformat(), "to": today.isoformat()},
+                headers=self._finnhub_headers(),
+            )
+            if not isinstance(data, list):
+                raise FinanceAPIError("Invalid company-news payload")
+            cache[key] = (monotonic(), data)
+        current = datetime.datetime.now(datetime.timezone.utc)
+        articles = []
+        for row in data[:250]:
+            if not isinstance(row, dict):
+                continue
+            title = safe_markdown_text(row.get("headline"), 120)
+            url = safe_http_url(row.get("url"))
+            try:
+                published = datetime.datetime.fromtimestamp(float(row.get("datetime")), datetime.timezone.utc)
+            except (TypeError, ValueError, OverflowError, OSError):
+                continue
+            if not title or not url or not current - datetime.timedelta(days=7) <= published <= current + datetime.timedelta(minutes=5):
+                continue
+            # Preserve the actual publisher so aggregating via Finnhub does not hide diversity.
+            source = safe_markdown_text(row.get("source") or "Finnhub", 50)
+            article = NewsArticle(source, title, url, published)
+            if item.symbol in article_tags(article, [item]):
+                articles.append(article)
+        self._set_source_status(f"Company news {item.symbol}", f"OK: {len(articles)} matched")
+        return articles
+
+    async def _fetch_all_news(self, watchlist) -> list[NewsArticle]:
+        semaphore = asyncio.Semaphore(3)
+
+        async def company(item):
+            async with semaphore:
+                try:
+                    return await self._fetch_company_news(item)
+                except Exception as exc:
+                    self._set_source_status(f"Company news {item.symbol}", f"unavailable ({type(exc).__name__})")
+                    return []
+
+        jobs = [self._fetch_news()]
+        if self.bot.settings.finnhub_api_key:
+            jobs.extend(company(item) for item in watchlist)
+        results = await asyncio.gather(*jobs, return_exceptions=True)
+        return [article for result in results if isinstance(result, list) for article in result]
 
     # ------------------------------------------------------------------ econ
 
@@ -825,6 +1048,13 @@ class FinanceCog(commands.Cog):
         return self._format_card_section(today, freedom_quarters, transfer_bonuses)
 
     @staticmethod
+    def _rewards_unavailable() -> str:
+        return (
+            f"• **Freedom Flex 5%:** current categories could not be verified. [Chase calendar]({CHASE_FREEDOM_CALENDAR_URL})\n"
+            f"• **Ultimate Rewards:** no current bonus verified. [Transfer tracker]({CHASE_TRANSFER_BONUS_URL})"
+        )
+
+    @staticmethod
     def _format_card_section(
         today: datetime.date,
         freedom_quarters: tuple[FreedomQuarter, ...],
@@ -832,28 +1062,32 @@ class FinanceCog(commands.Cog):
     ) -> str | None:
         quarter = (today.month - 1) // 3 + 1
         lines = []
-        body_limit = _EMBED_FIELD_LIMIT - _REWARDS_FOOTER_RESERVE
-        showed_categories = False
-        showed_transfer_bonus = False
+        category_limit = 330
+        transfer_limit = 300
         quarter_parts = []
         for item in freedom_quarters:
             categories = ", ".join(
                 safe_markdown_text(category, 80) for category in item.categories
             )
             status = "current" if item.quarter == quarter else "upcoming"
+            year = today.year + int(item.quarter < quarter)
+            quarter_label = f"Q{item.quarter}" + (f" {year}" if year != today.year else "")
             part = (
-                f"Q{item.quarter} ({_QUARTER_MONTHS[item.quarter]}, {status}): "
-                f"{categories}"
+                f"{quarter_label} ({_QUARTER_MONTHS[item.quarter]}, {status}): "
+                + categories
             )
             category_line = (
                 "• **Freedom Flex 5%:** " + "; ".join((*quarter_parts, part))
             )
-            if len(category_line) <= body_limit:
+            if len(category_line) <= category_limit:
                 quarter_parts.append(part)
-                showed_categories = True
+            elif not quarter_parts:
+                quarter_parts.append(part[:250] + "... (full list: Chase calendar)")
 
         if quarter_parts:
             lines.append("• **Freedom Flex 5%:** " + "; ".join(quarter_parts))
+        else:
+            lines.append("• **Freedom Flex 5%:** current categories could not be verified.")
 
         transfer_parts = []
         for bonus in transfer_bonuses:
@@ -872,28 +1106,21 @@ class FinanceCog(commands.Cog):
                 "• **Ultimate Rewards transfer bonuses:** "
                 + ", ".join((*transfer_parts, transfer_part))
             )
-            candidate = "\n".join((*lines, bonus_line))
-            if len(candidate) <= body_limit:
+            if len(bonus_line) <= transfer_limit:
                 transfer_parts.append(transfer_part)
-                showed_transfer_bonus = True
 
         if transfer_parts:
             lines.append(
                 "• **Ultimate Rewards transfer bonuses:** "
                 + ", ".join(transfer_parts)
             )
+        else:
+            lines.append("• **Ultimate Rewards:** no current bonus verified; check the tracker.")
 
-        sources = []
-        if showed_categories:
-            sources.append(f"[Chase calendar]({CHASE_FREEDOM_CALENDAR_URL})")
-        if showed_transfer_bonus:
-            sources.append(f"[PointsYeah tracker]({CHASE_TRANSFER_BONUS_URL})")
+        sources = [f"[Chase calendar]({CHASE_FREEDOM_CALENDAR_URL})", f"[PointsYeah tracker]({CHASE_TRANSFER_BONUS_URL})"]
 
-        if not lines:
-            return None
         footer = " · ".join(sources)
-        if showed_transfer_bonus:
-            footer += "\nVerify transfer offers in Chase before moving points."
+        footer += "\nActivate 5% categories; spending caps apply. Verify transfers in Chase."
         return "\n".join((*lines, footer))
 
     async def _fetch_rewards_page(self, label: str, url: str) -> str | None:
@@ -903,17 +1130,16 @@ class FinanceCog(commands.Cog):
             return None
 
         try:
-            async with session.get(url, allow_redirects=False) as response:
+            async with session.get(url, headers={"User-Agent": _RSS_HEADERS["User-Agent"]}, allow_redirects=False) as response:
                 if response.status != 200:
                     logger.warning("%s returned HTTP %d", label, response.status)
+                    self._set_source_status(label, f"HTTP {response.status}")
                     return None
-                raw = await response.content.read(_MAX_REWARDS_PAGE_BYTES + 1)
-                if len(raw) > _MAX_REWARDS_PAGE_BYTES:
-                    logger.warning("%s exceeded size limit", label)
-                    return None
-        except Exception:
-            logger.exception("%s fetch failed", label)
+                raw = await read_bounded(response.content, _MAX_REWARDS_PAGE_BYTES)
+        except Exception as exc:
+            self._set_source_status(label, f"fetch failed ({type(exc).__name__})")
             return None
+        self._set_source_status(label, "OK: page downloaded")
         return raw.decode("utf-8", errors="replace")
 
     async def _fetch_chase_freedom_quarters(
@@ -926,7 +1152,9 @@ class FinanceCog(commands.Cog):
         )
         if html is None:
             return ()
-        return parse_chase_freedom_quarters(html, today)
+        result = parse_chase_freedom_quarters(html, today)
+        self._set_source_status("Chase calendar", f"OK: {len(result)} quarters" if result else "current categories not verified")
+        return result
 
     async def _fetch_chase_transfer_bonuses(
         self,
@@ -938,9 +1166,27 @@ class FinanceCog(commands.Cog):
         )
         if html is None:
             return ()
-        return parse_chase_transfer_bonuses(html, today)
+        result = parse_chase_transfer_bonuses(html, today)
+        self._set_source_status("Chase transfers", f"OK: {len(result)} active bonuses" if result else "no current bonus verified")
+        return result
 
     # ------------------------------------------------------------------ slash
+
+    @app_commands.command(name="finance_status", description="Check finance scheduling and source coverage")
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def finance_status(self, interaction: discord.Interaction) -> None:
+        lines = [
+            f"Weekday loop running: {self.daily_check.is_running()}",
+            f"Friday loop running: {self.weekly_digest.is_running()}",
+            f"Next weekday loop check: {self.daily_check.next_iteration}",
+            f"Last weekday result: {getattr(self, '_last_daily_status', 'not checked')}",
+            f"Finnhub configured: {bool(self.bot.settings.finnhub_api_key)}",
+        ]
+        lines.extend(f"{source}: {status}" for source, status in getattr(self, "_source_status", {}).items())
+        embed = discord.Embed(title="Finance Status", description="Checks run at 5 PM Eastern; weekday alerts Mon-Thu, digest Fri.")
+        self._add_lines(embed, "Status", lines)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     watch = app_commands.Group(
         name="watch",

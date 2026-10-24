@@ -36,7 +36,8 @@ class FakeContent:
         self.raw = raw
 
     async def read(self, limit: int) -> bytes:
-        return self.raw[:limit]
+        result, self.raw = self.raw[:limit], self.raw[limit:]
+        return result
 
 
 class FakeSession:
